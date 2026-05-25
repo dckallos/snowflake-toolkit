@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# ============================================================
+# apply_sql.sh -- Apply one forward .sql file via the Snowflake CLI.
+#
+# Usage:
+#   scripts/apply_sql.sh path/to/V005__create_stages.sql [connection]
+#
+# Connection selection precedence:
+#   1. $2 (CLI argument)
+#   2. $SNOW_CONNECTION (env var)
+#   3. "admin" (default; B###/V###/R### all run as ACCOUNTADMIN)
+#
+# The Snowflake CLI reads its connection definition (account, user, role,
+# warehouse, authenticator, private_key_file) from ~/.snowflake/config.toml.
+# See the Snowflake CLI config.toml setup sub-page linked from Phase 0.6.
+#
+# --enhanced-exit-codes returns 5 on any query execution failure; without it,
+# `snow sql --filename` only reports the exit status of the LAST statement,
+# which is unsafe for multi-statement migration files. Refs:
+#   https://docs.snowflake.com/en/developer-guide/snowflake-cli/command-reference/sql-commands/sql
+#   https://github.com/snowflakedb/snowflake-cli/issues/2071
+# ============================================================
+set -euo pipefail
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "usage: $0 <path/to/file.sql> [connection_name]" >&2
+    exit 64
+fi
+
+SQL_FILE="$1"
+CONN="${2:-${SNOW_CONNECTION:-admin}}"
+
+if [[ ! -f "${SQL_FILE}" ]]; then
+    echo "error: file not found: ${SQL_FILE}" >&2
+    exit 66
+fi
+
+echo "==> snow sql --connection ${CONN} --filename ${SQL_FILE}"
+exec snow sql \
+    --connection "${CONN}" \
+    --filename "${SQL_FILE}" \
+    --enhanced-exit-codes
