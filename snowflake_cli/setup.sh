@@ -95,6 +95,15 @@ case "${PHASE}" in
 esac
 
 chmod_children() {
+    # NOTE: scripts/bootstrap_chmod.sh is the CANONICAL chmod policy for
+    # every .sh in the bootstrap.py call graph (covers scripts/apply_sql.sh,
+    # scripts/rollback_sql.sh, scripts/run_pipeline.sh, and everything
+    # under scripts/snowflake_cli/). See Phase 0.6 IaC strategy § 3.4.
+    # This helper is retained as a defensive no-op for the orchestrator's
+    # own subtree; `make iac` auto-runs `bash scripts/bootstrap_chmod.sh`
+    # via its PHONY `chmod` prereq, so the executable bit on every
+    # script in the call graph is guaranteed before bootstrap.py shells
+    # out via subprocess.run(...).
     echo "==> chmod +x ${SCRIPT_DIR}/*.sh"
     chmod +x "${SCRIPT_DIR}"/*.sh
 }
