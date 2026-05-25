@@ -168,3 +168,127 @@ resolve_admin_password_interactive() {
         return 78
     fi
 }
+
+# verify_admin_jwt_full <admin_user> <register_sql_file>
+#
+# Three-step verification of the JWT-based 'admin' connection. Used by both
+# 05_verify_admin_jwt.sh and 08_promote_admin_warehouse.sh so they exercise
+# exactly the same checks (DRY) regardless of which warehouse
+# [connections.admin].warehouse currently points at.
+#
+# Steps:
+#   1. Re-apply register_admin_public_key.sql via 'snow sql -c admin
+#      --filename ...' -- proves JWT auth end-to-end. ALTER USER ... SET
+#      RSA_PUBLIC_KEY with the same value is a no-op; with a new value it
+#      rotates the credential.
+#   2. 'snow connection test -c admin' -- full session handshake using
+#      the warehouse currently configured under [connections.admin].
+#   3. 'snow sql -c admin -q "SELECT CURRENT_USER(), CURRENT_ROLE();"' --
+#      real query round-trip that exercises the warehouse.
+#
+# Requires [connections.admin].warehouse to point at an EXISTING warehouse.
+# Initially that is an account-default such as COMPUTE_WH; after
+# 08_promote_admin_warehouse.sh runs, it is ARTWORK_WH.
+verify_admin_jwt_full() {
+    local admin_user="$1"
+    local sql_file="$2"
+
+    [[ -n "${admin_user}" ]] || { echo "error: verify_admin_jwt_full requires <admin_user>" >&2; return 64; }
+    [[ -f "${sql_file}" ]]  || { echo "error: SQL file not found: ${sql_file}" >&2; return 66; }
+
+    local pubkey_file="${ADMIN_PUBLIC_KEY_FILE:-${HOME}/.snowflake/keys/admin_rsa_key.pub}"
+    [[ -f "${pubkey_file}" ]] || { echo "error: public key not found: ${pubkey_file}" >&2; return 66; }
+
+    # Strip PEM header/footer/newlines so the key body fits in a single
+    # --variable value.
+    local pubkey
+    pubkey="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${pubkey_file}")"
+
+    echo "==> JWT auth check 1/3: re-apply ${sql_file##*/} via -c admin"
+    snow sql -c admin \
+        --filename "${sql_file}" \
+        --variable "admin_user=${admin_user}" \
+        --variable "rsa_public_key=${pubkey}" \
+        --enhanced-exit-codes
+
+    echo
+    echo "==> JWT auth check 2/3: snow connection test -c admin (full handshake)"
+    snow connection test -c admin
+
+    echo
+    echo "==> JWT auth check 3/3: SELECT CURRENT_USER(), CURRENT_ROLE() round-trip"
+    snow sql -c admin -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
+}
+
+# replace_toml_value_in_section <section> <key> <new_value> <file>
+#
+# Rewrite ONLY <key> = "<new_value>" inside the literal [<section>] block of
+# a TOML file. Touches no other section ([connections.loader], [cli.logs],
+# etc. are left untouched). Creates a timestamped backup at
+# <file>.bak.YYYYMMDDHHMMSS, writes the new contents to a temp file in the
+# same directory, then atomically mv's it over the original and re-chmods
+# to 600.
+#
+# Implementation: an awk script tracks whether the current line is inside
+# the target section. When inside, the first key-line that matches the
+# requested key is replaced with the new value; all other lines are emitted
+# unchanged. The section's existing surrounding lines (comments, blank
+# lines) are preserved. If the key is not found inside the target section,
+# the helper aborts with exit 3 and the original file is left in place.
+replace_toml_value_in_section() {
+    local section="$1"
+    local key="$2"
+    local new_value="$3"
+    local file="$4"
+
+    [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    local timestamp backup tmp dir
+    timestamp="$(date -u +%Y%m%d%H%M%S)"
+    backup="${file}.bak.${timestamp}"
+    dir="$(dirname "${file}")"
+    tmp="$(mktemp "${dir}/.$(basename "${file}").XXXXXX")"
+
+    cp -p "${file}" "${backup}"
+    echo "==> backed up ${file} -> ${backup}"
+
+    awk -v section="[${section}]" -v key="${key}" -v new_value="${new_value}" '
+        BEGIN { in_section = 0; replaced = 0 }
+        {
+            line = $0
+            trimmed = line
+            sub(/^[[:space:]]+/, "", trimmed)
+            sub(/[[:space:]]+$/, "", trimmed)
+
+            if (trimmed ~ /^\[.*\]$/) {
+                in_section = (trimmed == section) ? 1 : 0
+                print line
+                next
+            }
+
+            if (in_section && !replaced && trimmed ~ ("^" key "[[:space:]]*=")) {
+                printf "%s = \"%s\"\n", key, new_value
+                replaced = 1
+                next
+            }
+
+            print line
+        }
+        END {
+            if (!replaced) {
+                exit 3
+            }
+        }
+    ' "${file}" > "${tmp}"
+    local awk_rc=$?
+
+    if [[ ${awk_rc} -ne 0 ]]; then
+        rm -f "${tmp}"
+        echo "error: key '${key}' not found in section [${section}] of ${file}" >&2
+        return 3
+    fi
+
+    mv "${tmp}" "${file}"
+    chmod 600 "${file}"
+    echo "==> rewrote [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
+}

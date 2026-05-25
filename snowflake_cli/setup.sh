@@ -27,15 +27,27 @@
 #            and the private key). Safe to re-run.
 #   admin    Snowflake-side admin bootstrap. Runs 04-05 (register the admin
 #            public key via password-auth one-shot, then verify JWT-based
-#            'admin' connection). Prompts for admin password if
-#            SNOWFLAKE_PASSWORD is not pre-set.
+#            'admin' connection end-to-end against whatever warehouse is
+#            currently in [connections.admin] -- initially an account-
+#            default such as COMPUTE_WH, later ARTWORK_WH after promote).
+#            Prompts for admin password if SNOWFLAKE_PASSWORD is not
+#            pre-set.
 #   loader   Loader service-user bootstrap. Runs 06-07 (rotate ARTWORK_LOADER_SVC
 #            password, test the 'loader' connection). Requires `make iac` to
 #            have created the V008 service user already.
 #            Required env:
 #               LOADER_NEW_PASSWORD   strong random value; also goes into .env
+#   promote  Promote the admin connection from the initial account-default
+#            warehouse to ARTWORK_WH. Runs 08 (verify ARTWORK_WH exists,
+#            back up ~/.snowflake/config.toml, rewrite
+#            [connections.admin].warehouse, chmod 600, re-run the full
+#            JWT verification against ARTWORK_WH). Requires `make iac` to
+#            have already created ARTWORK_WH. Creates NO new Snowflake
+#            objects.
 #   all      Runs prereq + admin, then prints the next-step reminder to
-#            invoke `make iac` before re-running with --phase loader.
+#            invoke `make iac`, then `--phase promote`, then
+#            `--phase loader`. Does NOT run promote automatically (promote
+#            depends on make iac, which is outside setup.sh).
 #
 # Idempotent: every child script is safe to re-run.
 # ============================================================
@@ -45,15 +57,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
-usage: setup.sh [--phase {prereq|admin|loader|all}]
+usage: setup.sh [--phase {prereq|admin|loader|promote|all}]
   prereq   local-only steps 00-03 (install snow, init dirs, keypair, chmod)
   admin    Snowflake-side admin bootstrap (steps 04-05); zero env required.
            Account / admin user / warehouse parsed from
            ~/.snowflake/config.toml; admin password prompted interactively
-           if SNOWFLAKE_PASSWORD is not already set.
+           if SNOWFLAKE_PASSWORD is not already set. Runs full verification
+           against the warehouse currently in [connections.admin]
+           (initially an account-default like COMPUTE_WH).
   loader   loader service-user bootstrap (steps 06-07); requires
            LOADER_NEW_PASSWORD and 'make iac' must have already run V008
-  all      prereq + admin, then prints reminder to run 'make iac' before loader
+  promote  promote admin connection to ARTWORK_WH (step 08); requires
+           'make iac' to have already created ARTWORK_WH. Rewrites
+           [connections.admin].warehouse in ~/.snowflake/config.toml,
+           backs up the previous file, and re-runs full JWT verification
+           against the promoted warehouse. Creates NO new Snowflake objects.
+  all      prereq + admin, then prints reminder to run 'make iac', then
+           '--phase promote', then '--phase loader'. Does NOT run promote
+           automatically.
 EOF
     exit 64
 }
@@ -69,7 +90,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${PHASE}" in
-    prereq|admin|loader|all) ;;
+    prereq|admin|loader|promote|all) ;;
     *) echo "error: unknown phase '${PHASE}'" >&2; usage ;;
 esac
 
@@ -111,31 +132,52 @@ phase_loader() {
     run 07_test_loader_connection.sh
 }
 
+phase_promote() {
+    # No pre-flight env-var checks: 08_promote_admin_warehouse.sh sources
+    # _lib.sh to resolve the admin user from ~/.snowflake/config.toml and
+    # verifies ARTWORK_WH exists in Snowflake before rewriting config.toml.
+    # JWT auth via the existing admin RSA key pair; no admin password is
+    # required.
+    run 08_promote_admin_warehouse.sh
+}
+
 chmod_children
 
 case "${PHASE}" in
-    prereq) phase_prereq ;;
-    admin)  phase_admin ;;
-    loader) phase_loader ;;
+    prereq)  phase_prereq ;;
+    admin)   phase_admin ;;
+    loader)  phase_loader ;;
+    promote) phase_promote ;;
     all)
         phase_prereq
         phase_admin
         cat <<'EOF'
 
 ==================================================================
-PHASE 'all' complete through admin verification.
+PHASE 'all' complete through admin verification (against the initial
+account-default warehouse, e.g. COMPUTE_WH).
 
 Next steps (in this order):
-  1. make iac                                        # creates V008 ARTWORK_LOADER_SVC
-  2. export LOADER_NEW_PASSWORD='<strong_random_value>'
-  3. ./scripts/snowflake_cli/setup.sh --phase loader
-  4. Copy LOADER_NEW_PASSWORD into .env as SNOWFLAKE_PASSWORD
+  1. make iac
+     # creates ARTWORK_WH, ARTWORK_DB, V008 ARTWORK_LOADER_SVC, etc.
+  2. ./scripts/snowflake_cli/setup.sh --phase promote
+     # rewrites [connections.admin].warehouse to ARTWORK_WH and
+     # re-verifies; no further manual checks needed.
+  3. export LOADER_NEW_PASSWORD='<strong_random_value>'
+  4. ./scripts/snowflake_cli/setup.sh --phase loader
+  5. Copy LOADER_NEW_PASSWORD into .env as SNOWFLAKE_PASSWORD
 
 Note: --phase loader still requires LOADER_NEW_PASSWORD in the shell so
-the rotation can be applied via `snow sql -c admin --variable<br>loader_password=...`. Unlike the admin password, the new loader password
+the rotation can be applied via 'snow sql -c admin --variable
+loader_password=...'. Unlike the admin password, the new loader password
 must be persisted to .env afterwards (consumed by both the Phase 1A
 extractor and the snow CLI loader connection), so an interactive prompt
 would not remove the at-rest exposure.
+
+Note: --phase promote creates NO new Snowflake objects. ARTWORK_WH must
+already exist (created by infrastructure/V002__create_warehouses.sql via
+'make iac'); promote only verifies it, rewrites config.toml in code
+(with a timestamped backup), and re-runs the full JWT verification.
 ==================================================================
 EOF
         ;;
