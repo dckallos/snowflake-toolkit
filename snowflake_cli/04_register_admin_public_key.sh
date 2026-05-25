@@ -4,18 +4,34 @@
 # RSA public key against the admin Snowflake user using password auth.
 #
 # This is the ONLY snow CLI call in the project that uses password auth and
-# the ONLY call that bypasses ~/.snowflake/config.toml (every connection
-# parameter is passed on the command line). After this call succeeds, the
-# JWT-based 'admin' connection in config.toml works end-to-end and every
-# subsequent snow sql call uses '-c admin --filename ...'.
+# the ONLY call that bypasses ~/.snowflake/config.toml for connection
+# definition (every connection parameter is passed on the command line).
+# After this call succeeds, the JWT-based 'admin' connection in
+# config.toml works end-to-end and every subsequent snow sql call uses
+# '-c admin --filename ...'.
 #
-# Required env:
-#   SNOWFLAKE_ACCOUNT     account locator (no protocol, no .snowflakecomputing.com)
-#   SNOWFLAKE_ADMIN_USER  admin user that owns the ACCOUNTADMIN grant
-#   SNOWFLAKE_PASSWORD    admin temporary password (used ONLY for this call)
+# Zero-export resolution order (handled by _lib.sh helpers):
+#   SNOWFLAKE_ACCOUNT     env var -> [connections.admin].account in config.toml
+#   SNOWFLAKE_ADMIN_USER  env var -> [connections.admin].user in config.toml
+#   SNOWFLAKE_WAREHOUSE   env var -> [connections.admin].warehouse in
+#                         config.toml -> default 'ARTWORK_WH'
+#   SNOWFLAKE_PASSWORD    env var -> interactive `read -rs` prompt
+#
+# The admin password is needed 1-3 times per year (bootstrap + key
+# rotations) and is intentionally never written to disk. After this script
+# returns, JWT auth takes over for every subsequent snow CLI invocation.
+#
+# Why `--temporary-connection`: without it, `snow sql` loads the default
+# connection from ~/.snowflake/config.toml ([connections.admin], which
+# already references private_key_file) and merges the CLI flags on top.
+# The CLI then refuses to combine a populated private_key_file with
+# `--authenticator snowflake` ("Private Key authentication requires
+# authenticator set to SNOWFLAKE_JWT"). `--temporary-connection` (alias
+# `-x`) builds the connection PURELY from CLI flags and ignores every
+# named connection in config.toml, which is exactly the semantic we want
+# for this single password-auth bootstrap call.
 #
 # Optional env:
-#   SNOWFLAKE_WAREHOUSE   defaults to ARTWORK_WH
 #   ADMIN_PUBLIC_KEY_FILE defaults to ~/.snowflake/keys/admin_rsa_key.pub
 #   SQL_FILE              defaults to git-setup/operator/register_admin_public_key.sql
 #
@@ -24,13 +40,16 @@
 # ============================================================
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-: "${SNOWFLAKE_ACCOUNT:?SNOWFLAKE_ACCOUNT is required}"
-: "${SNOWFLAKE_ADMIN_USER:?SNOWFLAKE_ADMIN_USER is required}"
-: "${SNOWFLAKE_PASSWORD:?SNOWFLAKE_PASSWORD (admin temp password) is required}"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_lib.sh"
 
-WAREHOUSE="${SNOWFLAKE_WAREHOUSE:-ARTWORK_WH}"
+ACCOUNT="$(resolve_admin_account)"
+ADMIN_USER="$(resolve_admin_user)"
+WAREHOUSE="$(resolve_admin_warehouse)"
+
 PUBLIC_KEY_FILE="${ADMIN_PUBLIC_KEY_FILE:-${HOME}/.snowflake/keys/admin_rsa_key.pub}"
 SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
 
@@ -41,16 +60,20 @@ SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.
 # --variable value.
 PUBKEY="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${PUBLIC_KEY_FILE}")"
 
-echo "==> registering admin public key for user '${SNOWFLAKE_ADMIN_USER}' on account '${SNOWFLAKE_ACCOUNT}'"
+# Prompt for the admin password if it was not pre-set (CI may pre-set it).
+resolve_admin_password_interactive
+
+echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}'"
 SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
 snow sql \
-    --account       "${SNOWFLAKE_ACCOUNT}" \
-    --user          "${SNOWFLAKE_ADMIN_USER}" \
+    --temporary-connection \
+    --account       "${ACCOUNT}" \
+    --user          "${ADMIN_USER}" \
     --role          ACCOUNTADMIN \
     --warehouse     "${WAREHOUSE}" \
     --authenticator snowflake \
     --filename      "${SQL_FILE}" \
-    --variable      "admin_user=${SNOWFLAKE_ADMIN_USER}" \
+    --variable      "admin_user=${ADMIN_USER}" \
     --variable      "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 
