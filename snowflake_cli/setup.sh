@@ -6,9 +6,20 @@
 # OpenAccess Artwork Medallion Pipeline. Chmods every child script in this
 # directory, then runs them in numeric order according to the selected phase.
 #
-# Quickstart:
+# Quickstart (zero env exports):
 #   chmod +x scripts/snowflake_cli/setup.sh
 #   ./scripts/snowflake_cli/setup.sh --phase all
+#
+# `--phase admin` and `--phase all` no longer require any pre-set env vars.
+# Account / admin user / warehouse are resolved from ~/.snowflake/config.toml
+# (overridable via env vars) by scripts 04 and 05 themselves, using helpers
+# in _lib.sh. SNOWFLAKE_PASSWORD is prompted interactively (read -rs) if it
+# is not already exported; it is never written to disk.
+#
+# The admin password is needed 1-3 times per year (bootstrap + key rotations)
+# and is intentionally NOT stored at rest. After the admin RSA key is
+# registered by step 04, JWT auth takes over for every subsequent snow CLI
+# invocation.
 #
 # Phases:
 #   prereq   Local-only setup. Runs 00-03 (install snow, init ~/.snowflake,
@@ -16,11 +27,8 @@
 #            and the private key). Safe to re-run.
 #   admin    Snowflake-side admin bootstrap. Runs 04-05 (register the admin
 #            public key via password-auth one-shot, then verify JWT-based
-#            'admin' connection).
-#            Required env:
-#               SNOWFLAKE_ACCOUNT     account locator
-#               SNOWFLAKE_ADMIN_USER  admin user (e.g., DKALLOS)
-#               SNOWFLAKE_PASSWORD    admin temporary password (one-shot only)
+#            'admin' connection). Prompts for admin password if
+#            SNOWFLAKE_PASSWORD is not pre-set.
 #   loader   Loader service-user bootstrap. Runs 06-07 (rotate ARTWORK_LOADER_SVC
 #            password, test the 'loader' connection). Requires `make iac` to
 #            have created the V008 service user already.
@@ -39,8 +47,10 @@ usage() {
     cat <<'EOF'
 usage: setup.sh [--phase {prereq|admin|loader|all}]
   prereq   local-only steps 00-03 (install snow, init dirs, keypair, chmod)
-  admin    Snowflake-side admin bootstrap (steps 04-05); requires
-           SNOWFLAKE_ACCOUNT, SNOWFLAKE_ADMIN_USER, SNOWFLAKE_PASSWORD
+  admin    Snowflake-side admin bootstrap (steps 04-05); zero env required.
+           Account / admin user / warehouse parsed from
+           ~/.snowflake/config.toml; admin password prompted interactively
+           if SNOWFLAKE_PASSWORD is not already set.
   loader   loader service-user bootstrap (steps 06-07); requires
            LOADER_NEW_PASSWORD and 'make iac' must have already run V008
   all      prereq + admin, then prints reminder to run 'make iac' before loader
@@ -85,9 +95,12 @@ phase_prereq() {
 }
 
 phase_admin() {
-    : "${SNOWFLAKE_ACCOUNT:?SNOWFLAKE_ACCOUNT must be set for --phase admin}"
-    : "${SNOWFLAKE_ADMIN_USER:?SNOWFLAKE_ADMIN_USER must be set for --phase admin}"
-    : "${SNOWFLAKE_PASSWORD:?SNOWFLAKE_PASSWORD (admin temp password) must be set for --phase admin}"
+    # No pre-flight env-var checks here: scripts 04 and 05 resolve account /
+    # admin user / warehouse from ~/.snowflake/config.toml (overridable via
+    # env vars) using _lib.sh helpers, and prompt interactively for
+    # SNOWFLAKE_PASSWORD if it is not already set. Letting the child scripts
+    # own resolution keeps the user-facing prompt and error messages in one
+    # place.
     run 04_register_admin_public_key.sh
     run 05_verify_admin_jwt.sh
 }
@@ -113,10 +126,16 @@ case "${PHASE}" in
 PHASE 'all' complete through admin verification.
 
 Next steps (in this order):
-  1. make iac                  # creates V008 ARTWORK_LOADER_SVC service user
+  1. make iac                                        # creates V008 ARTWORK_LOADER_SVC
   2. export LOADER_NEW_PASSWORD='<strong_random_value>'
   3. ./scripts/snowflake_cli/setup.sh --phase loader
   4. Copy LOADER_NEW_PASSWORD into .env as SNOWFLAKE_PASSWORD
+
+Note: --phase loader still requires LOADER_NEW_PASSWORD in the shell so
+the rotation can be applied via `snow sql -c admin --variable<br>loader_password=...`. Unlike the admin password, the new loader password
+must be persisted to .env afterwards (consumed by both the Phase 1A
+extractor and the snow CLI loader connection), so an interactive prompt
+would not remove the at-rest exposure.
 ==================================================================
 EOF
         ;;
