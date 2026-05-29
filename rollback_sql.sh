@@ -28,4 +28,5 @@ echo "==> snow sql --connection ${CONN} --filename ${SQL_FILE}  [ROLLBACK]"
 exec snow sql \
     --connection "${CONN}" \
     --filename "${SQL_FILE}" \
+    -D "github_pat=${GITHUB_PAT}" \
     --enhanced-exit-codes

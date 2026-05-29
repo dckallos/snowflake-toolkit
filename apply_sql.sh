@@ -35,8 +35,33 @@ if [[ ! -f "${SQL_FILE}" ]]; then
     exit 66
 fi
 
-echo "==> snow sql --connection ${CONN} --filename ${SQL_FILE}"
-exec snow sql \
-    --connection "${CONN}" \
-    --filename "${SQL_FILE}" \
-    --enhanced-exit-codes
+# Secret-bearing applies (e.g. B001 renders the GitHub PAT into a
+# CREATE OR REPLACE SECRET) set SNOW_SUPPRESS_STDOUT=1 so the Snowflake CLI's
+# per-statement echo -- which would otherwise print the rendered PAT in
+# cleartext to the terminal and chat scrollback -- is discarded. stderr is
+# preserved so genuine errors stay visible; Snowflake compilation/permission
+# errors reference object names, not the secret value. scripts/bootstrap.py
+# sets this flag automatically for any script that substitutes the github_pat
+# template into a SECRET statement. See the 2026-05-29 design decision,
+# section 6 (PAT exposure).
+if [[ "${SNOW_SUPPRESS_STDOUT:-0}" == "1" ]]; then
+    echo "==> snow sql --connection ${CONN} --filename ${SQL_FILE}  [secret apply: stdout suppressed]"
+    if ! snow sql \
+        --connection "${CONN}" \
+        --filename "${SQL_FILE}" \
+        -D "github_pat=${GITHUB_PAT}" \
+        --enhanced-exit-codes \
+        >/dev/null; then
+        echo "error: secret apply failed for ${SQL_FILE}." >&2
+        echo "       stdout was suppressed to avoid leaking the PAT; inspect" >&2
+        echo "       the Snowflake query history for the failing statement." >&2
+        exit 5
+    fi
+else
+    echo "==> snow sql --connection ${CONN} --filename ${SQL_FILE}"
+    exec snow sql \
+        --connection "${CONN}" \
+        --filename "${SQL_FILE}" \
+        -D "github_pat=${GITHUB_PAT}" \
+        --enhanced-exit-codes
+fi

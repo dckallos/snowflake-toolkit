@@ -43,7 +43,6 @@ ALLOW_LIST=(
     scripts/bootstrap_chmod.sh
     scripts/git_mark_executable.sh
     scripts/rollback_sql.sh
-    scripts/run_pipeline.sh
     scripts/snowflake_cli/_lib.sh
     scripts/snowflake_cli/00_install_snowflake_cli.sh
     scripts/snowflake_cli/01_init_snowflake_home.sh

@@ -1,0 +1,20 @@
+-- ============================================================
+-- show_admin_account_grants.sql -- Read-only account-privilege probe.
+--
+-- Lists every privilege currently granted to ARTWORK_ADMIN so that
+-- scripts/bootstrap.py can assert the account-level privilege
+-- contract (REQUIRED_ADMIN_ACCOUNT_PRIVILEGES) immediately after
+-- infrastructure/V001__create_roles.sql applies and BEFORE V002
+-- issues its first ARTWORK_ADMIN-owned CREATE WAREHOUSE.
+--
+-- This statement is pure metadata introspection: it creates, alters,
+-- and drops nothing, and it influences no DDL. It exists as a
+-- version-controlled .sql file (not an inline Python string) so that
+-- Python remains a pure executor -- every SQL statement the IaC layer
+-- runs, including this read-only probe, is authored in a .sql file.
+-- bootstrap.py::_show_grants_account_privileges runs it via
+-- `snow sql --filename scripts/sql/show_admin_account_grants.sql
+-- --format json` and parses the ACCOUNT-scoped rows; it never
+-- templates or mutates this SQL.
+-- ============================================================
+SHOW GRANTS TO ROLE ARTWORK_ADMIN;

@@ -66,7 +66,6 @@ ALLOW_LIST=(
     scripts/bootstrap_chmod.sh
     scripts/git_mark_executable.sh
     scripts/rollback_sql.sh
-    scripts/run_pipeline.sh
     scripts/snowflake_cli/_lib.sh
     scripts/snowflake_cli/00_install_snowflake_cli.sh
     scripts/snowflake_cli/01_init_snowflake_home.sh
@@ -127,12 +126,17 @@ done
 
 # ----------------------------------------------------------------------
 # Missing-path handling: any entry in ALLOW_LIST missing on disk is a
-# hard failure.
+# hard failure. The ${#MISSING[@]} guard is required because `set -u`
+# treats expansion of an EMPTY array via "${MISSING[@]}" as an unbound
+# variable on Bash 3.2 (macOS system Bash), which would otherwise abort
+# the script on the happy path where every file is present.
 # ----------------------------------------------------------------------
-for path in "${MISSING[@]}"; do
-    echo "error: ${path} listed in ALLOW_LIST but not found on disk" >&2
-    fail=1
-done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+    for path in "${MISSING[@]}"; do
+        echo "error: ${path} listed in ALLOW_LIST but not found on disk" >&2
+        fail=1
+    done
+fi
 
 if [[ ${fail} -ne 0 ]]; then
     exit 1
