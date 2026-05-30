@@ -4,7 +4,7 @@
 -- Lists every privilege currently granted to ARTWORK_ADMIN so that
 -- scripts/bootstrap.py can assert the account-level privilege
 -- contract (REQUIRED_ADMIN_ACCOUNT_PRIVILEGES) immediately after
--- infrastructure/V001__create_roles.sql applies and BEFORE V002
+-- infrastructure/create_roles.sql applies and BEFORE V002
 -- issues its first ARTWORK_ADMIN-owned CREATE WAREHOUSE.
 --
 -- This statement is pure metadata introspection: it creates, alters,

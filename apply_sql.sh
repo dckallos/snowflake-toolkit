@@ -3,12 +3,12 @@
 # apply_sql.sh -- Apply one forward .sql file via the Snowflake CLI.
 #
 # Usage:
-#   scripts/apply_sql.sh path/to/V005__create_stages.sql [connection]
+#   scripts/apply_sql.sh path/to/create_stages.sql [connection]
 #
 # Connection selection precedence:
 #   1. $2 (CLI argument)
 #   2. $SNOW_CONNECTION (env var)
-#   3. "admin" (default; B###/V###/R### all run as ACCOUNTADMIN)
+#   3. "admin" (default; all migrations run as ACCOUNTADMIN)
 #
 # The Snowflake CLI reads its connection definition (account, user, role,
 # warehouse, authenticator, private_key_file) from ~/.snowflake/config.toml.
@@ -40,7 +40,7 @@ fi
 # per-statement echo -- which would otherwise print the rendered PAT in
 # cleartext to the terminal and chat scrollback -- is discarded. stderr is
 # preserved so genuine errors stay visible; Snowflake compilation/permission
-# errors reference object names, not the secret value. scripts/bootstrap.py
+# errors reference object names, not the secret value. scripts/orchestrate.sh
 # sets this flag automatically for any script that substitutes the github_pat
 # template into a SECRET statement. See the 2026-05-29 design decision,
 # section 6 (PAT exposure).

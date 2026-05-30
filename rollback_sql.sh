@@ -3,7 +3,7 @@
 # rollback_sql.sh -- Apply one drop (rollback) .sql file via the Snowflake CLI.
 #
 # Usage:
-#   scripts/rollback_sql.sh path/to/V005__drop_stages.sql [connection]
+#   scripts/rollback_sql.sh path/to/drop_stages.sql [connection]
 #
 # Every drop script is idempotent (DROP IF EXISTS / DROP ROLE IF EXISTS),
 # so this is always safe to invoke, even if the paired create script was

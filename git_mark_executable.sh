@@ -37,24 +37,28 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Same allow-list as scripts/bootstrap_chmod.sh. Keep the two in sync.
-ALLOW_LIST=(
-    scripts/apply_sql.sh
-    scripts/bootstrap_chmod.sh
-    scripts/git_mark_executable.sh
-    scripts/rollback_sql.sh
-    scripts/snowflake_cli/_lib.sh
-    scripts/snowflake_cli/00_install_snowflake_cli.sh
-    scripts/snowflake_cli/01_init_snowflake_home.sh
-    scripts/snowflake_cli/02_generate_admin_keypair.sh
-    scripts/snowflake_cli/03_lock_config_permissions.sh
-    scripts/snowflake_cli/04_register_admin_public_key.sh
-    scripts/snowflake_cli/05_verify_admin_jwt.sh
-    scripts/snowflake_cli/06_rotate_loader_password.sh
-    scripts/snowflake_cli/07_test_loader_connection.sh
-    scripts/snowflake_cli/08_promote_admin_warehouse.sh
-    scripts/snowflake_cli/setup.sh
-)
+# Allow-list is the shared scripts/executable_files.txt (the same file read by
+# scripts/bootstrap_chmod.sh). One path per line; blank lines and #-comments
+# ignored. Bash 3.2-safe read loop (no mapfile).
+EXEC_LIST_FILE="scripts/executable_files.txt"
+if [[ ! -f "${EXEC_LIST_FILE}" ]]; then
+    echo "error: ${EXEC_LIST_FILE} not found (required allow-list)" >&2
+    exit 66
+fi
+ALLOW_LIST=()
+while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [[ -z "${line}" ]] && continue
+    ALLOW_LIST+=("${line}")
+done < "${EXEC_LIST_FILE}"
+
+# Guard: an empty/all-comment allow-list would trip `set -u` on the
+# "${ALLOW_LIST[@]}" expansion below (Bash 3.2). Fail fast instead.
+if [[ ${#ALLOW_LIST[@]} -eq 0 ]]; then
+    echo "error: ${EXEC_LIST_FILE} has no usable entries (empty or all comments)" >&2
+    exit 66
+fi
 
 declare -a UPDATED=()
 declare -a SKIPPED=()
