@@ -18,7 +18,7 @@ scripts/snowflake_cli/02_generate_admin_keypair.sh
 scripts/snowflake_cli/03_lock_config_permissions.sh
 scripts/snowflake_cli/04_register_admin_public_key.sh
 scripts/snowflake_cli/05_verify_admin_jwt.sh
-scripts/snowflake_cli/06_rotate_loader_password.sh
+scripts/snowflake_cli/06_setup_loader_keypair.sh
 scripts/snowflake_cli/07_test_loader_connection.sh
 scripts/snowflake_cli/08_promote_admin_warehouse.sh
 scripts/snowflake_cli/setup.sh
