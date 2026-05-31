@@ -32,11 +32,12 @@
 #            default such as COMPUTE_WH, later ARTWORK_WH after promote).
 #            Prompts for admin password if SNOWFLAKE_PASSWORD is not
 #            pre-set.
-#   loader   Loader service-user bootstrap. Runs 06-07 (rotate ARTWORK_LOADER_SVC
-#            password, test the 'loader' connection). Requires `make iac` to
-#            have created the V008 service user already.
-#            Required env:
-#               LOADER_NEW_PASSWORD   strong random value; also goes into .env
+#   loader   Loader service-user bootstrap. Runs 06-07 (generate the loader
+#            RSA key pair, register its public key on ARTWORK_LOADER_SVC via
+#            the admin JWT connection, rewrite [connections.loader] for
+#            key-pair auth, then test the 'loader' connection). Requires
+#            `make iac` to have created the (TYPE = SERVICE) service user
+#            already. No env vars and no password required.
 #   promote  Promote the admin connection from the initial account-default
 #            warehouse to ARTWORK_WH. Runs 08 (verify ARTWORK_WH exists,
 #            back up ~/.snowflake/config.toml, rewrite
@@ -65,8 +66,11 @@ usage: setup.sh [--phase {prereq|admin|loader|promote|all}]
            if SNOWFLAKE_PASSWORD is not already set. Runs full verification
            against the warehouse currently in [connections.admin]
            (initially an account-default like COMPUTE_WH).
-  loader   loader service-user bootstrap (steps 06-07); requires
-           LOADER_NEW_PASSWORD and 'make iac' must have already run V008
+  loader   loader service-user bootstrap (steps 06-07); requires 'make iac'
+           to have already created the (TYPE = SERVICE) ARTWORK_LOADER_SVC.
+           Generates the loader key pair, registers it via the admin JWT
+           connection, rewrites [connections.loader] for key-pair auth, and
+           tests the connection. No env vars / no password required.
   promote  promote admin connection to ARTWORK_WH (step 08); requires
            'make iac' to have already created ARTWORK_WH. Rewrites
            [connections.admin].warehouse in ~/.snowflake/config.toml,
@@ -136,8 +140,11 @@ phase_admin() {
 }
 
 phase_loader() {
-    : "${LOADER_NEW_PASSWORD:?LOADER_NEW_PASSWORD must be set for --phase loader}"
-    run 06_rotate_loader_password.sh
+    # No env-var prerequisites: 06_setup_loader_keypair.sh generates the loader
+    # RSA key pair lazily, registers the public key on ARTWORK_LOADER_SVC via the
+    # admin JWT connection, and rewrites [connections.loader] for key-pair auth.
+    # `make iac` must have already created the (TYPE = SERVICE) user.
+    run 06_setup_loader_keypair.sh
     run 07_test_loader_connection.sh
 }
 
@@ -168,23 +175,25 @@ account-default warehouse, e.g. COMPUTE_WH).
 
 Next steps (in this order):
   1. make iac
-     # creates ARTWORK_WH, ARTWORK_DB, V008 ARTWORK_LOADER_SVC, etc.
+     # creates ARTWORK_WH, ARTWORK_DB, ARTWORK_LOADER_SVC (TYPE = SERVICE), etc.
   2. ./scripts/snowflake_cli/setup.sh --phase promote
      # rewrites [connections.admin].warehouse to ARTWORK_WH and
      # re-verifies; no further manual checks needed.
-  3. export LOADER_NEW_PASSWORD='<strong_random_value>'
-  4. ./scripts/snowflake_cli/setup.sh --phase loader
-  5. Copy LOADER_NEW_PASSWORD into .env as SNOWFLAKE_PASSWORD
+  3. ./scripts/snowflake_cli/setup.sh --phase loader
+     # generates the loader key pair, registers it on ARTWORK_LOADER_SVC via
+     # the admin JWT connection, and switches [connections.loader] to
+     # key-pair auth -- no password anywhere.
+  4. In .env, point the Python extractor at the same private key:
+     #   SNOWFLAKE_PRIVATE_KEY_FILE=~/.snowflake/keys/loader_rsa_key.p8
 
-Note: --phase loader still requires LOADER_NEW_PASSWORD in the shell so
-the rotation can be applied via 'snow sql -c admin --variable
-loader_password=...'. Unlike the admin password, the new loader password
-must be persisted to .env afterwards (consumed by both the Phase 1A
-extractor and the snow CLI loader connection), so an interactive prompt
-would not remove the at-rest exposure.
+Note: --phase loader needs NO env vars and no password. The loader has no
+chicken-and-egg problem -- a working admin JWT connection already exists, so
+the loader public key is registered by admin over JWT and the service user
+(TYPE = SERVICE) authenticates only with its key pair. Nothing secret is
+written to disk except the key files themselves (chmod 600).
 
 Note: --phase promote creates NO new Snowflake objects. ARTWORK_WH must
-already exist (created by infrastructure/V002__create_warehouses.sql via
+already exist (created by infrastructure/create_warehouses.sql via
 'make iac'); promote only verifies it, rewrites config.toml in code
 (with a timestamped backup), and re-runs the full JWT verification.
 ==================================================================

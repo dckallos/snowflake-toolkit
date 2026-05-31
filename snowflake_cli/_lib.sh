@@ -292,3 +292,89 @@ replace_toml_value_in_section() {
     chmod 600 "${file}"
     echo "==> rewrote [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
 }
+
+# upsert_toml_value_in_section <section> <key> <new_value> <file>
+#
+# Like replace_toml_value_in_section, but INSERT-IF-MISSING instead of
+# abort-if-missing. Guarantees that after the call, [<section>] contains
+# exactly one `<key> = "<new_value>"` line:
+#   - key present in section            -> value replaced in place
+#   - section present, key absent        -> key line inserted into the section
+#   - section absent                     -> a new [<section>] block is appended
+#                                           with the key line
+#
+# This is the right tool when converting [connections.loader] from password
+# auth to key-pair auth, where `private_key_file` / `authenticator` lines may
+# not yet exist. (replace_toml_value_in_section is retained for callers like
+# 08_promote_admin_warehouse.sh that WANT the abort-if-missing safety, e.g.
+# rewriting an existing `warehouse` value.)
+#
+# Same durability contract as replace_*: timestamped backup, atomic temp-file
+# swap, chmod 600. All other sections are left byte-for-byte untouched.
+upsert_toml_value_in_section() {
+    local section="$1"
+    local key="$2"
+    local new_value="$3"
+    local file="$4"
+
+    [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    local timestamp backup tmp dir
+    timestamp="$(date -u +%Y%m%d%H%M%S)"
+    backup="${file}.bak.${timestamp}"
+    dir="$(dirname "${file}")"
+    tmp="$(mktemp "${dir}/.$(basename "${file}").XXXXXX")"
+
+    cp -p "${file}" "${backup}"
+    echo "==> backed up ${file} -> ${backup}"
+
+    awk -v section="[${section}]" -v key="${key}" -v new_value="${new_value}" '
+        function emit_key() { printf "%s = \"%s\"\n", key, new_value }
+        BEGIN { in_section = 0; replaced = 0; seen_section = 0 }
+        {
+            line = $0
+            trimmed = line
+            sub(/^[[:space:]]+/, "", trimmed)
+            sub(/[[:space:]]+$/, "", trimmed)
+
+            if (trimmed ~ /^\[.*\]$/) {
+                # Leaving the target section without having written the key:
+                # insert it now, before the next section header.
+                if (in_section && !replaced) { emit_key(); replaced = 1 }
+                in_section = (trimmed == section) ? 1 : 0
+                if (in_section) { seen_section = 1 }
+                print line
+                next
+            }
+
+            if (in_section && !replaced && trimmed ~ ("^" key "[[:space:]]*=")) {
+                emit_key()
+                replaced = 1
+                next
+            }
+
+            print line
+        }
+        END {
+            # EOF reached while still inside the target section, key not written.
+            if (in_section && !replaced) { emit_key(); replaced = 1 }
+            # Section never appeared at all: append a fresh block.
+            if (!seen_section) {
+                print ""
+                print section
+                emit_key()
+            }
+        }
+    ' "${file}" > "${tmp}"
+    local awk_rc=$?
+
+    if [[ ${awk_rc} -ne 0 ]]; then
+        rm -f "${tmp}"
+        echo "error: failed to upsert [${section}].${key} in ${file}" >&2
+        return 1
+    fi
+
+    mv "${tmp}" "${file}"
+    chmod 600 "${file}"
+    echo "==> upserted [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
+}
