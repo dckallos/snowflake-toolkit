@@ -66,7 +66,7 @@ DEFAULT_CONNECTION = "admin"
 REQUIRED_ADMIN_ACCOUNT_PRIVILEGES = frozenset({
     "CREATE WAREHOUSE",
     "CREATE DATABASE",
-    # "EXECUTE TASK",  # enable in lockstep with create_roles.sql for create_tasks.sql
+    "EXECUTE TASK",  # enabled in lockstep with create_roles.sql for create_tasks.sql (MET_LEASE_RECLAIM_TASK, 2026-05-31)
 })
 
 logger = logging.getLogger("preflight")
