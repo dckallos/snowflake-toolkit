@@ -67,6 +67,8 @@ REQUIRED_ADMIN_ACCOUNT_PRIVILEGES = frozenset({
     "CREATE WAREHOUSE",
     "CREATE DATABASE",
     "EXECUTE TASK",  # enabled in lockstep with create_roles.sql for create_tasks.sql (MET_LEASE_RECLAIM_TASK, 2026-05-31)
+    "EXECUTE ALERT",      # create_alerts.sql (CORTEX_FORK_ALERT, 2026-05-31)
+    "MONITOR EXECUTION",  # create_alerts.sql (alert reads QUERY_HISTORY_BY_USER for other users)
 })
 
 logger = logging.getLogger("preflight")
