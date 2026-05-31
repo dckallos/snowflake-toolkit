@@ -6,6 +6,7 @@
 # Keep alphabetized within each subtree for easy diffing.
 scripts/apply_sql.sh
 scripts/bootstrap_chmod.sh
+scripts/check.sh
 scripts/git_mark_executable.sh
 scripts/orchestrate.sh
 scripts/rollback_sql.sh
