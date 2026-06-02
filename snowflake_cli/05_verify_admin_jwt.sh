@@ -48,6 +48,6 @@ SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.
 
 verify_admin_jwt_full "${ADMIN_USER}" "${SQL_FILE}"
 
-CURRENT_WAREHOUSE="$(parse_toml_value 'connections.admin' 'warehouse' "${HOME}/.snowflake/config.toml")"
+CURRENT_WAREHOUSE="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${SNOW_LIB_CONFIG_TOML}")"
 echo
 echo "==> admin JWT connection verified end-to-end against warehouse '${CURRENT_WAREHOUSE}'."

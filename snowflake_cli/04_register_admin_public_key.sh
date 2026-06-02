@@ -46,11 +46,22 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
+# Preflight: config.toml must exist with a seeded [connections.admin] block so
+# the resolve_* helpers have something to read. A missing file yields the
+# actionable init-profile hint rather than three separate bare resolve errors.
+if [[ ! -f "${SNOW_LIB_CONFIG_TOML}" ]]; then
+    echo "error: config.toml not found: ${SNOW_LIB_CONFIG_TOML}" >&2
+    echo "       seed it first with:" >&2
+    echo "           ./scripts/snowflake_cli/setup.sh --phase init-profile" >&2
+    echo "       (or run --phase prereq / --phase all, which include it), then re-run." >&2
+    exit 66
+fi
+
 ACCOUNT="$(resolve_admin_account)"
 ADMIN_USER="$(resolve_admin_user)"
 WAREHOUSE="$(resolve_admin_warehouse)"
 
-PUBLIC_KEY_FILE="${ADMIN_PUBLIC_KEY_FILE:-${HOME}/.snowflake/keys/admin_rsa_key.pub}"
+PUBLIC_KEY_FILE="${ADMIN_PUBLIC_KEY_FILE:-$(admin_key_path pub)}"
 SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
 
 [[ -f "${PUBLIC_KEY_FILE}" ]] || { echo "error: public key not found: ${PUBLIC_KEY_FILE}" >&2; exit 66; }

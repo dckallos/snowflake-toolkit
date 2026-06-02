@@ -12,12 +12,17 @@
 # ============================================================
 set -euo pipefail
 
-echo "==> snow connection test -c loader (SNOWFLAKE_JWT)"
-snow connection test -c loader
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_lib.sh"
+
+echo "==> snow connection test -c ${SNOW_LIB_LOADER_CONN} (SNOWFLAKE_JWT)"
+snow connection test -c "${SNOW_LIB_LOADER_CONN}"
 
 echo
 echo "==> CURRENT_USER / CURRENT_ROLE round-trip"
-snow sql -c loader -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
+snow sql -c "${SNOW_LIB_LOADER_CONN}" -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
 
 echo
 echo "==> loader connection verified (key-pair / SNOWFLAKE_JWT)"

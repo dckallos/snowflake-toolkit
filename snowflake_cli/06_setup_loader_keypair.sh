@@ -45,9 +45,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 LOADER_USER="${LOADER_USER:-ARTWORK_LOADER_SVC}"
-KEY_DIR="${HOME}/.snowflake/keys"
-PRIVATE_KEY="${LOADER_PRIVATE_KEY:-${KEY_DIR}/loader_rsa_key.p8}"
-PUBLIC_KEY="${LOADER_PUBLIC_KEY:-${KEY_DIR}/loader_rsa_key.pub}"
+KEY_DIR="${SNOW_LIB_KEY_DIR}"
+PRIVATE_KEY="${LOADER_PRIVATE_KEY:-$(loader_key_path p8)}"
+PUBLIC_KEY="${LOADER_PUBLIC_KEY:-$(loader_key_path pub)}"
 SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_loader_public_key.sql}"
 CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"
 
@@ -74,32 +74,32 @@ fi
 PUBKEY="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${PUBLIC_KEY}")"
 
 # --- 2. Register the public key via the admin JWT connection --------------
-echo "==> registering loader public key for user '${LOADER_USER}' via -c admin"
-snow sql -c admin \
+echo "==> registering loader public key for user '${LOADER_USER}' via -c ${SNOW_LIB_ADMIN_CONN}"
+snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     --filename "${SQL_FILE}" \
     --variable "loader_user=${LOADER_USER}" \
     --variable "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 
-# --- 3. Point [connections.loader] at key-pair auth -----------------------
+# --- 3. Point [connections.<loader>] at key-pair auth ---------------------
 # Resolve the account from the admin connection (loader shares the account).
 ACCOUNT="$(resolve_admin_account)"
 
-echo "==> updating [connections.loader] in ${CONFIG_TOML} for key-pair auth"
-upsert_toml_value_in_section 'connections.loader' 'account'          "${ACCOUNT}"      "${CONFIG_TOML}"
-upsert_toml_value_in_section 'connections.loader' 'user'             "${LOADER_USER}"  "${CONFIG_TOML}"
-upsert_toml_value_in_section 'connections.loader' 'authenticator'    'SNOWFLAKE_JWT'   "${CONFIG_TOML}"
-upsert_toml_value_in_section 'connections.loader' 'private_key_file' "${PRIVATE_KEY}"  "${CONFIG_TOML}"
+echo "==> updating [connections.${SNOW_LIB_LOADER_CONN}] in ${CONFIG_TOML} for key-pair auth"
+upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'account'          "${ACCOUNT}"      "${CONFIG_TOML}"
+upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'user'             "${LOADER_USER}"  "${CONFIG_TOML}"
+upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONFIG_TOML}"
+upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'private_key_file' "${PRIVATE_KEY}"  "${CONFIG_TOML}"
 
 cat <<EOF
 
 ==> loader key-pair auth established.
     User:            ${LOADER_USER} (TYPE = SERVICE, key-pair only)
     Private key:     ${PRIVATE_KEY}
-    config.toml:     [connections.loader] now uses authenticator = SNOWFLAKE_JWT
+    config.toml:     [connections.${SNOW_LIB_LOADER_CONN}] now uses authenticator = SNOWFLAKE_JWT
 
-    Any stale 'password' line left in [connections.loader] is ignored under
-    SNOWFLAKE_JWT, but you may delete it for cleanliness.
+    Any stale 'password' line left in [connections.${SNOW_LIB_LOADER_CONN}] is ignored
+    under SNOWFLAKE_JWT, but you may delete it for cleanliness.
 
     For the Python extractor, set in .env (no password at rest):
         SNOWFLAKE_PRIVATE_KEY_FILE=${PRIVATE_KEY}

@@ -57,16 +57,21 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-ADMIN_USER="$(resolve_admin_user)"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
 CONFIG_TOML="${CONFIG_TOML:-${HOME}/.snowflake/config.toml}"
-TARGET_WAREHOUSE="${TARGET_WAREHOUSE:-ARTWORK_WH}"
 
+# Check config.toml exists BEFORE resolving values from it, so a missing file
+# yields the actionable init-profile hint rather than a bare resolve error.
 [[ -f "${CONFIG_TOML}" ]] || {
     echo "error: config.toml not found: ${CONFIG_TOML}" >&2
-    echo "       hand-write it per Phase 0.6 walkthrough Section 2, then re-run." >&2
+    echo "       seed it first with:" >&2
+    echo "           ./scripts/snowflake_cli/setup.sh --phase init-profile" >&2
+    echo "       (or run --phase prereq / --phase all, which include it), then re-run." >&2
     exit 66
 }
+
+ADMIN_USER="$(resolve_admin_user)"
+SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
+TARGET_WAREHOUSE="${TARGET_WAREHOUSE:-ARTWORK_WH}"
 
 # ------------------------------------------------------------
 # Step 1/4: verify ARTWORK_WH exists in Snowflake (account-side check).
@@ -77,7 +82,7 @@ TARGET_WAREHOUSE="${TARGET_WAREHOUSE:-ARTWORK_WH}"
 # success.
 # ------------------------------------------------------------
 echo "==> Step 1/4: verify ${TARGET_WAREHOUSE} exists in Snowflake"
-SHOW_OUTPUT="$(snow sql -c admin \
+SHOW_OUTPUT="$(snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     -q "SHOW WAREHOUSES LIKE '${TARGET_WAREHOUSE}';" \
     --format=plain \
     --enhanced-exit-codes)"
@@ -103,9 +108,9 @@ echo "    OK: ${TARGET_WAREHOUSE} exists"
 # ([connections.loader], [cli.logs]) are left strictly untouched.
 # ------------------------------------------------------------
 echo
-echo "==> Step 2/4: rewrite [connections.admin].warehouse -> ${TARGET_WAREHOUSE}"
+echo "==> Step 2/4: rewrite [connections.${SNOW_LIB_ADMIN_CONN}].warehouse -> ${TARGET_WAREHOUSE}"
 replace_toml_value_in_section \
-    "connections.admin" \
+    "connections.${SNOW_LIB_ADMIN_CONN}" \
     "warehouse" \
     "${TARGET_WAREHOUSE}" \
     "${CONFIG_TOML}"
@@ -117,7 +122,7 @@ replace_toml_value_in_section \
 # ------------------------------------------------------------
 echo
 echo "==> Step 3/4: parse-back verification"
-NEW_VALUE="$(parse_toml_value 'connections.admin' 'warehouse' "${CONFIG_TOML}")"
+NEW_VALUE="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${CONFIG_TOML}")"
 if [[ "${NEW_VALUE}" != "${TARGET_WAREHOUSE}" ]]; then
     echo "error: parse-back mismatch: expected '${TARGET_WAREHOUSE}', got '${NEW_VALUE}'" >&2
     echo "       inspect ${CONFIG_TOML} and the most recent .bak.* backup." >&2
