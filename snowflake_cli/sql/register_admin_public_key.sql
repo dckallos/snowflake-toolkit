@@ -20,14 +20,16 @@
 --
 -- The 'admin_user' and 'rsa_public_key' variables are substituted at runtime
 -- by the snow CLI (see snow sql command reference). After this script runs,
--- DESCRIBE USER reports a populated RSA_PUBLIC_KEY_FP and 'snow connection
--- test -c admin' succeeds.
+-- the key is registered; proof that it works is the JWT handshake in
+-- 05_verify_admin_jwt.sh ('snow connection test' + a CURRENT_USER round-trip),
+-- which is a stronger check than echoing DESCRIBE USER. We deliberately do NOT
+-- run DESCRIBE USER here: this file is applied multiple times (register in 04,
+-- re-apply over JWT in 05, and again in 08/promote), so a DESCRIBE would dump
+-- the entire 45-row user record several times for no added assurance.
 --
 -- Idempotent: re-running with the same key value is a no-op; re-running with
 -- a new key rotates the credential.
 -- =============================================================================
 
-ALTER USER &{ admin_user }
-    SET RSA_PUBLIC_KEY = '&{ rsa_public_key }';
-
-DESCRIBE USER &{ admin_user };
+ALTER USER <% admin_user %>
+    SET RSA_PUBLIC_KEY = '<% rsa_public_key %>';
