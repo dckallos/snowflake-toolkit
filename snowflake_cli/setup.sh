@@ -22,9 +22,17 @@
 # invocation.
 #
 # Phases:
-#   prereq   Local-only setup. Runs 00-03 (install snow, init ~/.snowflake,
-#            generate admin RSA key pair, lock permissions on config.toml
-#            and the private key). Safe to re-run.
+#   prereq   Local-only setup. Runs 00-02, then init_profile.sh, then 03
+#            (install snow, init ~/.snowflake, generate admin RSA key pair,
+#            seed [connections.admin] in config.toml if missing, lock
+#            permissions on config.toml and the private key). Safe to re-run.
+#   init-profile  Local-only. Seed [connections.admin] in
+#            ~/.snowflake/config.toml from SNOWFLAKE_ACCOUNT /
+#            SNOWFLAKE_ADMIN_USER (prompted if unset) + the admin key path.
+#            Non-destructive: if the block already has an account it is left
+#            untouched. Also sets default_connection_name = "admin" when unset.
+#            Runs automatically inside `prereq`; exposed standalone for
+#            re-seeding a fresh config.toml. Creates NO Snowflake objects.
 #   admin    Snowflake-side admin bootstrap. Runs 04-05 (register the admin
 #            public key via password-auth one-shot, then verify JWT-based
 #            'admin' connection end-to-end against whatever warehouse is
@@ -51,15 +59,52 @@
 #            depends on make iac, which is outside setup.sh).
 #
 # Idempotent: every child script is safe to re-run.
+#
+# ------------------------------------------------------------
+# Multi-account support
+# ------------------------------------------------------------
+# By default this suite manages the connection pair admin / loader (unchanged).
+# To manage a SECOND Snowflake account, pass a profile label and every step
+# targets a namespaced connection pair + key files:
+#
+#   ./setup.sh --profile clientb --phase all
+#     -> admin connection  = [connections.clientb]      key clientb_rsa_key.p8
+#     -> loader connection = [connections.clientb_loader] key clientb_loader_rsa_key.p8
+#
+# Advanced: override either name explicitly with --admin-conn / --loader-conn.
+# With no flags the names are admin / loader and the historical
+# admin_rsa_key.p8 / loader_rsa_key.p8 key paths are preserved byte-for-byte.
+#
+# Inspect and switch the active account (these touch NO Snowflake objects):
+#   ./setup.sh --phase list                 # list profiles + mark the default
+#   ./setup.sh --profile clientb --phase switch   # set default_connection_name
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_lib.sh"
+
 usage() {
     cat <<'EOF'
-usage: setup.sh [--phase {prereq|admin|loader|promote|all}]
-  prereq   local-only steps 00-03 (install snow, init dirs, keypair, chmod)
+usage: setup.sh [--profile LABEL | --admin-conn NAME --loader-conn NAME]
+                [--phase {prereq|init-profile|admin|loader|promote|all|list|switch}]
+
+  Connection selection (default pair: admin / loader):
+    --profile LABEL    target [connections.LABEL] + [connections.LABEL_loader]
+                       (key files LABEL_rsa_key.p8 / LABEL_loader_rsa_key.p8)
+    --admin-conn NAME  explicit admin connection name (overrides --profile)
+    --loader-conn NAME explicit loader connection name (overrides --profile)
+
+  prereq   local-only steps 00-02 + init_profile.sh + step 03 (install snow,
+           init dirs, keypair, seed [connections.<admin>] if missing, chmod)
+  init-profile
+           local-only: seed [connections.<admin>] in ~/.snowflake/config.toml
+           from SNOWFLAKE_ACCOUNT / SNOWFLAKE_ADMIN_USER (prompted if unset)
+           and the admin key path. Non-destructive (skips if account already
+           set); sets default_connection_name to the admin conn when unset.
+           Creates NO Snowflake objects.
   admin    Snowflake-side admin bootstrap (steps 04-05); zero env required.
            Account / admin user / warehouse parsed from
            ~/.snowflake/config.toml; admin password prompted interactively
@@ -79,24 +124,53 @@ usage: setup.sh [--phase {prereq|admin|loader|promote|all}]
   all      prereq + admin, then prints reminder to run 'make iac', then
            '--phase promote', then '--phase loader'. Does NOT run promote
            automatically.
+  list     local-only: list every [connections.*] in config.toml and mark
+           the default_connection_name. Creates NO Snowflake objects.
+  switch   local-only: set default_connection_name to the selected admin
+           connection (from --profile / --admin-conn). Creates NO Snowflake
+           objects.
 EOF
     exit 64
 }
 
-# Parse a single optional --phase NAME flag.
+# Parse optional flags: --phase, plus the connection selectors.
 PHASE="all"
+PROFILE=""
+ADMIN_CONN_FLAG=""
+LOADER_CONN_FLAG=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --phase) PHASE="${2:-}"; shift 2 ;;
+        --phase)       PHASE="${2:-}";            shift 2 ;;
+        --profile)     PROFILE="${2:-}";          shift 2 ;;
+        --admin-conn)  ADMIN_CONN_FLAG="${2:-}";  shift 2 ;;
+        --loader-conn) LOADER_CONN_FLAG="${2:-}"; shift 2 ;;
         -h|--help|help) usage ;;
         *) echo "error: unknown argument '$1'" >&2; usage ;;
     esac
 done
 
 case "${PHASE}" in
-    prereq|admin|loader|promote|all) ;;
+    prereq|init-profile|admin|loader|promote|all|list|switch) ;;
     *) echo "error: unknown phase '${PHASE}'" >&2; usage ;;
 esac
+
+# Resolve the admin/loader connection names. Explicit --admin-conn/--loader-conn
+# win; otherwise --profile LABEL yields LABEL / LABEL_loader; otherwise the
+# historical defaults admin / loader (which preserve the original key paths).
+if [[ -n "${PROFILE}" ]]; then
+    ADMIN_CONN="${ADMIN_CONN_FLAG:-${PROFILE}}"
+    LOADER_CONN="${LOADER_CONN_FLAG:-${PROFILE}_loader}"
+else
+    ADMIN_CONN="${ADMIN_CONN_FLAG:-admin}"
+    LOADER_CONN="${LOADER_CONN_FLAG:-loader}"
+fi
+
+# Validate (these names become TOML section keys and `snow -c` args) and export
+# so every child script resolves the same target account via _lib.sh.
+validate_conn_name "${ADMIN_CONN}"  || exit $?
+validate_conn_name "${LOADER_CONN}" || exit $?
+export ADMIN_CONN LOADER_CONN
+echo "==> connections: admin='${ADMIN_CONN}' loader='${LOADER_CONN}'"
 
 chmod_children() {
     # NOTE: scripts/bootstrap_chmod.sh is the CANONICAL chmod policy for
@@ -121,10 +195,20 @@ run() {
     "${SCRIPT_DIR}/${script}" "$@"
 }
 
+phase_init_profile() {
+    # Local-only: seed [connections.admin] in config.toml if it is missing.
+    # init_profile.sh sources _lib.sh, is non-destructive (skips when the
+    # admin account is already set), and creates no Snowflake objects.
+    run init_profile.sh
+}
+
 phase_prereq() {
     run 00_install_snowflake_cli.sh
     run 01_init_snowflake_home.sh
     run 02_generate_admin_keypair.sh
+    # Seed [connections.admin] AFTER the key pair exists (so private_key_file
+    # points at a real file) and BEFORE 03 locks config.toml's permissions.
+    phase_init_profile
     run 03_lock_config_permissions.sh
 }
 
@@ -157,13 +241,28 @@ phase_promote() {
     run 08_promote_admin_warehouse.sh
 }
 
+phase_list() {
+    # Local-only: enumerate every [connections.*] in config.toml and mark the
+    # default. Touches no Snowflake objects (resolved entirely from the file).
+    list_connections
+}
+
+phase_switch() {
+    # Local-only: point default_connection_name at the selected admin connection
+    # (resolved above from --profile / --admin-conn). Touches no Snowflake objects.
+    set_default_connection "${ADMIN_CONN}"
+}
+
 chmod_children
 
 case "${PHASE}" in
-    prereq)  phase_prereq ;;
-    admin)   phase_admin ;;
-    loader)  phase_loader ;;
-    promote) phase_promote ;;
+    prereq)       phase_prereq ;;
+    init-profile) phase_init_profile ;;
+    admin)        phase_admin ;;
+    loader)       phase_loader ;;
+    promote)      phase_promote ;;
+    list)         phase_list ;;
+    switch)       phase_switch ;;
     all)
         phase_prereq
         phase_admin

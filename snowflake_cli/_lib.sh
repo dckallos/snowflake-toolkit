@@ -37,6 +37,105 @@ SNOW_LIB_CONFIG_TOML="${SNOW_LIB_CONFIG_TOML:-${HOME}/.snowflake/config.toml}"
 # Default warehouse used when neither an env var nor config.toml provides one.
 SNOW_LIB_DEFAULT_WAREHOUSE="${SNOW_LIB_DEFAULT_WAREHOUSE:-ARTWORK_WH}"
 
+# ------------------------------------------------------------
+# Multi-account connection-name model.
+#
+# Every helper that touches a connection resolves its config.toml section and
+# key-file paths from these two names rather than the literals "admin"/"loader".
+# Defaults preserve the original single-account behavior byte-for-byte (and the
+# original admin_rsa_key.p8 / loader_rsa_key.p8 paths). setup.sh exports
+# ADMIN_CONN / LOADER_CONN (from --profile / --admin-conn / --loader-conn) so
+# all child scripts inherit a consistent target account.
+# ------------------------------------------------------------
+SNOW_LIB_ADMIN_CONN="${ADMIN_CONN:-admin}"
+SNOW_LIB_LOADER_CONN="${LOADER_CONN:-loader}"
+SNOW_LIB_KEY_DIR="${SNOW_LIB_KEY_DIR:-${HOME}/.snowflake/keys}"
+
+# validate_conn_name <name>
+#
+# A connection name is used both as a TOML bare section key
+# ([connections.NAME]) and as a `snow -c NAME` argument, so restrict it to a
+# safe charset. Rejects anything else with a clear error (exit 64).
+validate_conn_name() {
+    local name="$1"
+    if [[ ! "${name}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "error: invalid connection name '${name}'" >&2
+        echo "       allowed characters: letters, digits, underscore, hyphen" >&2
+        return 64
+    fi
+}
+
+# admin_key_path [p8|pub] / loader_key_path [p8|pub]
+#
+# Derive the key-file path for the active admin/loader connection. The default
+# names (admin/loader) yield the historical admin_rsa_key.* / loader_rsa_key.*
+# paths; any other connection name is namespaced automatically, so two accounts
+# never share a key file.
+admin_key_path() {
+    printf '%s/%s_rsa_key.%s' "${SNOW_LIB_KEY_DIR}" "${SNOW_LIB_ADMIN_CONN}" "${1:-p8}"
+}
+loader_key_path() {
+    printf '%s/%s_rsa_key.%s' "${SNOW_LIB_KEY_DIR}" "${SNOW_LIB_LOADER_CONN}" "${1:-p8}"
+}
+
+# How many timestamped config.toml.bak.* files to retain after a mutating
+# helper (replace_*/upsert_*) runs. Older backups beyond this count are pruned
+# so repeated `--phase promote`/`--phase loader` runs do not accumulate
+# unbounded copies of the config next to the live file.
+SNOW_LIB_BACKUP_KEEP="${SNOW_LIB_BACKUP_KEEP:-5}"
+
+# prune_backups <file> [keep]
+#
+# Delete all but the newest <keep> (default SNOW_LIB_BACKUP_KEEP) timestamped
+# "<file>.bak.YYYYMMDDHHMMSS" backups. The timestamp suffix sorts lexically in
+# chronological order, so `sort -r` yields newest-first. A no-op when the glob
+# matches nothing or the count is already at/below <keep>.
+prune_backups() {
+    local file="$1"
+    local keep="${2:-${SNOW_LIB_BACKUP_KEEP}}"
+    local dir base
+    dir="$(dirname "${file}")"
+    base="$(basename "${file}")"
+
+    local backups=()
+    local f
+    while IFS= read -r f; do
+        [[ -n "${f}" ]] && backups+=("${f}")
+    done < <(ls -1 "${dir}/${base}".bak.* 2>/dev/null | sort -r)
+
+    local count=${#backups[@]}
+    if (( count > keep )); then
+        local i
+        for (( i = keep; i < count; i++ )); do
+            rm -f "${backups[$i]}"
+            echo "==> pruned old backup ${backups[$i]}"
+        done
+    fi
+}
+
+# warn_duplicate_section <section> <file>
+#
+# Emit a stderr warning if the literal "[<section>]" header appears more than
+# once in <file>. The parse/replace/upsert helpers all operate on the FIRST
+# matching section only; a duplicate header is a silent-wrong-edit foot-gun
+# (e.g. a hand-edit that pasted a second [connections.admin] block), so flag it
+# rather than edit the wrong copy quietly. Never fatal.
+warn_duplicate_section() {
+    local section="$1"
+    local file="$2"
+    [[ -f "${file}" ]] || return 0
+    local n
+    n="$(awk -v s="[${section}]" '
+        { l = $0; sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l) }
+        l == s { c++ }
+        END { print c + 0 }
+    ' "${file}")"
+    if (( n > 1 )); then
+        echo "WARN: section [${section}] appears ${n} times in ${file};" >&2
+        echo "      only the FIRST occurrence will be edited. Remove duplicates." >&2
+    fi
+}
+
 # parse_toml_value <section> <key> <file>
 #
 # Extract the value for `key = "value"` inside the literal `[<section>]`
@@ -81,6 +180,158 @@ parse_toml_value() {
     ' "${file}"
 }
 
+# parse_toml_toplevel_key <key> <file>
+#
+# Like parse_toml_value, but for a TOP-LEVEL (no section) key such as
+# `default_connection_name`. Scans only the lines BEFORE the first `[section]`
+# header -- in TOML, a bare `key = value` after a table header belongs to that
+# table, so true top-level keys must precede every section. Returns the empty
+# string when the key is absent.
+parse_toml_toplevel_key() {
+    local key="$1"
+    local file="$2"
+
+    [[ -f "${file}" ]] || { printf ''; return 0; }
+
+    awk -v key="${key}" '
+        { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
+        line ~ /^\[.*\]$/ { exit 0 }
+        line ~ ("^" key "[[:space:]]*=") {
+            sub("^" key "[[:space:]]*=[[:space:]]*", "", line)
+            sub(/[[:space:]]*#.*$/, "", line)
+            if (line ~ /^".*"$/) { line = substr(line, 2, length(line) - 2) }
+            print line
+            exit 0
+        }
+    ' "${file}"
+}
+
+# upsert_toml_toplevel_key <key> <new_value> <file>
+#
+# Insert-or-replace a TOP-LEVEL `<key> = "<new_value>"` line, always positioned
+# BEFORE the first `[section]` header (so it cannot accidentally fall inside a
+# table). Same durability contract as the in-section helpers: timestamped
+# backup, atomic temp-file swap, chmod 600, backup pruning. Used to manage
+# `default_connection_name`.
+upsert_toml_toplevel_key() {
+    local key="$1"
+    local new_value="$2"
+    local file="$3"
+
+    [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    local timestamp backup tmp dir
+    timestamp="$(date -u +%Y%m%d%H%M%S)"
+    backup="${file}.bak.${timestamp}"
+    dir="$(dirname "${file}")"
+    tmp="$(mktemp "${dir}/.$(basename "${file}").XXXXXX")"
+
+    cp -p "${file}" "${backup}"
+    echo "==> backed up ${file} -> ${backup}"
+
+    awk -v key="${key}" -v new_value="${new_value}" '
+        function emit() { printf "%s = \"%s\"\n", key, new_value }
+        BEGIN { replaced = 0; before_first_section = 1 }
+        {
+            line = $0
+            trimmed = line
+            sub(/^[[:space:]]+/, "", trimmed)
+            sub(/[[:space:]]+$/, "", trimmed)
+
+            if (trimmed ~ /^\[.*\]$/) {
+                # About to enter the first section: write the key first if we
+                # have not already replaced an existing top-level occurrence.
+                if (before_first_section && !replaced) { emit(); replaced = 1 }
+                before_first_section = 0
+                print line
+                next
+            }
+
+            if (before_first_section && !replaced && trimmed ~ ("^" key "[[:space:]]*=")) {
+                emit()
+                replaced = 1
+                next
+            }
+
+            print line
+        }
+        END {
+            # No section header in the whole file and key never seen: append it.
+            if (!replaced) { emit() }
+        }
+    ' "${file}" > "${tmp}"
+    local awk_rc=$?
+
+    if [[ ${awk_rc} -ne 0 ]]; then
+        rm -f "${tmp}"
+        echo "error: failed to upsert top-level ${key} in ${file}" >&2
+        return 1
+    fi
+
+    mv "${tmp}" "${file}"
+    chmod 600 "${file}"
+    echo "==> upserted top-level ${key} = \"${new_value}\" in ${file} (chmod 600)"
+    prune_backups "${file}"
+}
+
+# list_connections [file]
+#
+# Print every [connections.NAME] defined in config.toml, marking the one named
+# by default_connection_name. Read-only. Falls back gracefully on an empty or
+# missing file. (Intentionally parses the file rather than shelling out to
+# `snow connection list`, so it works offline and is deterministic in tests.)
+list_connections() {
+    local file="${1:-${SNOW_LIB_CONFIG_TOML}}"
+    local default
+    default="$(parse_toml_toplevel_key 'default_connection_name' "${file}")"
+
+    echo "Connections in ${file}:"
+    if [[ ! -f "${file}" ]]; then
+        echo "  (file not found)"
+        return 0
+    fi
+
+    local found=0 name
+    while IFS= read -r name; do
+        found=1
+        if [[ "${name}" == "${default}" ]]; then
+            echo "  * ${name}   (default)"
+        else
+            echo "    ${name}"
+        fi
+    done < <(awk '
+        { l = $0; sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l) }
+        l ~ /^\[connections\..+\]$/ {
+            sub(/^\[connections\./, "", l); sub(/\]$/, "", l); print l
+        }
+    ' "${file}")
+
+    if [[ "${found}" -eq 0 ]]; then
+        echo "  (none defined)"
+    fi
+}
+
+# set_default_connection <name> [file]
+#
+# Point default_connection_name at <name>. Validates the name, warns (but does
+# not fail) if no [connections.<name>] block exists yet, then upserts the
+# top-level key via the durable helper (timestamped backup, chmod 600).
+set_default_connection() {
+    local name="$1"
+    local file="${2:-${SNOW_LIB_CONFIG_TOML}}"
+
+    validate_conn_name "${name}" || return $?
+    [[ -f "${file}" ]] || { echo "error: config.toml not found: ${file}" >&2; return 66; }
+
+    if [[ -z "$(parse_toml_value "connections.${name}" 'account' "${file}")" ]]; then
+        echo "WARN: [connections.${name}] has no 'account' yet in ${file};" >&2
+        echo "      setting it as default anyway -- seed it with --phase init-profile." >&2
+    fi
+
+    upsert_toml_toplevel_key 'default_connection_name' "${name}" "${file}"
+    echo "==> default_connection_name is now \"${name}\""
+}
+
 # resolve_admin_account
 #
 # Resolution order:
@@ -91,12 +342,12 @@ parse_toml_value() {
 resolve_admin_account() {
     local value="${SNOWFLAKE_ACCOUNT:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value 'connections.admin' 'account' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'account' "${SNOW_LIB_CONFIG_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         echo "error: cannot resolve SNOWFLAKE_ACCOUNT" >&2
         echo "       set SNOWFLAKE_ACCOUNT in the environment OR add" >&2
-        echo "       account = \"...\" under [connections.admin] in" >&2
+        echo "       account = \"...\" under [connections.${SNOW_LIB_ADMIN_CONN}] in" >&2
         echo "       ${SNOW_LIB_CONFIG_TOML}" >&2
         return 78
     fi
@@ -112,12 +363,12 @@ resolve_admin_account() {
 resolve_admin_user() {
     local value="${SNOWFLAKE_ADMIN_USER:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value 'connections.admin' 'user' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'user' "${SNOW_LIB_CONFIG_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         echo "error: cannot resolve SNOWFLAKE_ADMIN_USER" >&2
         echo "       set SNOWFLAKE_ADMIN_USER in the environment OR add" >&2
-        echo "       user = \"...\" under [connections.admin] in" >&2
+        echo "       user = \"...\" under [connections.${SNOW_LIB_ADMIN_CONN}] in" >&2
         echo "       ${SNOW_LIB_CONFIG_TOML}" >&2
         return 78
     fi
@@ -133,7 +384,7 @@ resolve_admin_user() {
 resolve_admin_warehouse() {
     local value="${SNOWFLAKE_WAREHOUSE:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value 'connections.admin' 'warehouse' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${SNOW_LIB_CONFIG_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         value="${SNOW_LIB_DEFAULT_WAREHOUSE}"
@@ -196,7 +447,7 @@ verify_admin_jwt_full() {
     [[ -n "${admin_user}" ]] || { echo "error: verify_admin_jwt_full requires <admin_user>" >&2; return 64; }
     [[ -f "${sql_file}" ]]  || { echo "error: SQL file not found: ${sql_file}" >&2; return 66; }
 
-    local pubkey_file="${ADMIN_PUBLIC_KEY_FILE:-${HOME}/.snowflake/keys/admin_rsa_key.pub}"
+    local pubkey_file="${ADMIN_PUBLIC_KEY_FILE:-$(admin_key_path pub)}"
     [[ -f "${pubkey_file}" ]] || { echo "error: public key not found: ${pubkey_file}" >&2; return 66; }
 
     # Strip PEM header/footer/newlines so the key body fits in a single
@@ -204,20 +455,20 @@ verify_admin_jwt_full() {
     local pubkey
     pubkey="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${pubkey_file}")"
 
-    echo "==> JWT auth check 1/3: re-apply ${sql_file##*/} via -c admin"
-    snow sql -c admin \
+    echo "==> JWT auth check 1/3: re-apply ${sql_file##*/} via -c ${SNOW_LIB_ADMIN_CONN}"
+    snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
         --filename "${sql_file}" \
         --variable "admin_user=${admin_user}" \
         --variable "rsa_public_key=${pubkey}" \
         --enhanced-exit-codes
 
     echo
-    echo "==> JWT auth check 2/3: snow connection test -c admin (full handshake)"
-    snow connection test -c admin
+    echo "==> JWT auth check 2/3: snow connection test -c ${SNOW_LIB_ADMIN_CONN} (full handshake)"
+    snow connection test -c "${SNOW_LIB_ADMIN_CONN}"
 
     echo
     echo "==> JWT auth check 3/3: SELECT CURRENT_USER(), CURRENT_ROLE() round-trip"
-    snow sql -c admin -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
+    snow sql -c "${SNOW_LIB_ADMIN_CONN}" -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
 }
 
 # replace_toml_value_in_section <section> <key> <new_value> <file>
@@ -242,6 +493,8 @@ replace_toml_value_in_section() {
     local file="$4"
 
     [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    warn_duplicate_section "${section}" "${file}"
 
     local timestamp backup tmp dir
     timestamp="$(date -u +%Y%m%d%H%M%S)"
@@ -291,6 +544,7 @@ replace_toml_value_in_section() {
     mv "${tmp}" "${file}"
     chmod 600 "${file}"
     echo "==> rewrote [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
+    prune_backups "${file}"
 }
 
 # upsert_toml_value_in_section <section> <key> <new_value> <file>
@@ -318,6 +572,8 @@ upsert_toml_value_in_section() {
     local file="$4"
 
     [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    warn_duplicate_section "${section}" "${file}"
 
     local timestamp backup tmp dir
     timestamp="$(date -u +%Y%m%d%H%M%S)"
@@ -377,4 +633,5 @@ upsert_toml_value_in_section() {
     mv "${tmp}" "${file}"
     chmod 600 "${file}"
     echo "==> upserted [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
+    prune_backups "${file}"
 }

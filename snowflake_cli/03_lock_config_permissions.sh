@@ -13,8 +13,13 @@
 # ============================================================
 set -euo pipefail
 
-CONFIG_TOML="${HOME}/.snowflake/config.toml"
-PRIVATE_KEY="${HOME}/.snowflake/keys/admin_rsa_key.p8"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_lib.sh"
+
+CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"
+PRIVATE_KEY="$(admin_key_path p8)"
 
 lock() {
     local file="$1"
