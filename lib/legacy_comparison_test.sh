@@ -167,14 +167,14 @@ _test_orchestrator_comparison() {
     
     # Test 2: Invalid argument handling
     _run_comparison_test "orchestrator_invalid_args" \
-        "$LEGACY_ORCHESTRATOR --invalid-flag 2>&1 || true" \
-        "$MODERN_ORCHESTRATOR --invalid-flag 2>&1 || true" \
+        "$LEGACY_ORCHESTRATOR --invalid-flag 2>&1" \
+        "$MODERN_ORCHESTRATOR --invalid-flag 2>&1" \
         "error_message_consistency"
     
     # Test 3: Missing phase argument
     _run_comparison_test "orchestrator_missing_phase" \
-        "$LEGACY_ORCHESTRATOR --connection admin 2>&1 || true" \
-        "$MODERN_ORCHESTRATOR --connection admin 2>&1 || true" \
+        "$LEGACY_ORCHESTRATOR --connection admin 2>&1" \
+        "$MODERN_ORCHESTRATOR --connection admin 2>&1" \
         "error_message_consistency"
     
     # Test 4: Dry run validation (no actual execution)
@@ -201,20 +201,20 @@ _test_dbt_orchestrator_comparison() {
     
     # Test 1: Help output similarity
     _run_comparison_test "dbt_orchestrator_help_comparison" \
-        "$LEGACY_DBT_ORCHESTRATOR --help 2>&1 || true" \
+        "$LEGACY_DBT_ORCHESTRATOR --help 2>&1" \
         "$MODERN_DBT_ORCHESTRATOR --help" \
         "help_content_similarity"
     
     # Test 2: Invalid phase handling
     _run_comparison_test "dbt_orchestrator_invalid_phase" \
-        "$LEGACY_DBT_ORCHESTRATOR --phase invalid 2>&1 || true" \
-        "$MODERN_DBT_ORCHESTRATOR --phase invalid 2>&1 || true" \
+        "$LEGACY_DBT_ORCHESTRATOR --phase invalid 2>&1" \
+        "$MODERN_DBT_ORCHESTRATOR --phase invalid 2>&1" \
         "error_message_consistency"
     
     # Test 3: Missing phase argument
     _run_comparison_test "dbt_orchestrator_missing_phase" \
-        "$LEGACY_DBT_ORCHESTRATOR --connection admin 2>&1 || true" \
-        "$MODERN_DBT_ORCHESTRATOR --connection admin 2>&1 || true" \
+        "$LEGACY_DBT_ORCHESTRATOR --connection admin 2>&1" \
+        "$MODERN_DBT_ORCHESTRATOR --connection admin 2>&1" \
         "error_message_consistency"
     
     # Test 4: Modern connection parameter consistency
@@ -264,19 +264,19 @@ _test_error_handling_comparison() {
     
     # Test missing configuration file
     _run_comparison_test "missing_config_handling" \
-        "$LEGACY_ORCHESTRATOR --phase infra --connection nonexistent 2>&1 || true" \
-        "$MODERN_ORCHESTRATOR --config /nonexistent/config.yml --phase infra --connection nonexistent 2>&1 || true" \
+        "$LEGACY_ORCHESTRATOR --phase infra --connection nonexistent 2>&1" \
+        "$MODERN_ORCHESTRATOR --config /nonexistent/config.yml --phase infra --connection nonexistent 2>&1" \
         "error_handling_quality"
     
     # Test invalid connection
     _run_comparison_test "invalid_connection_handling" \
-        "$LEGACY_ORCHESTRATOR --phase infra --connection nonexistent_connection 2>&1 || true" \
-        "$MODERN_ORCHESTRATOR --config '$TEST_CONFIG' --phase infra --connection nonexistent_connection 2>&1 || true" \
+        "$LEGACY_ORCHESTRATOR --phase infra --connection nonexistent_connection 2>&1" \
+        "$MODERN_ORCHESTRATOR --config '$TEST_CONFIG' --phase infra --connection nonexistent_connection 2>&1" \
         "error_handling_quality"
     
     # Test network/dependency failures
     _run_validation_test "modern_dependency_error_handling" \
-        "PATH='/tmp/empty' $MODERN_ORCHESTRATOR --config '$TEST_CONFIG' --phase infra 2>&1 || true" \
+        "PATH='/tmp/empty' $MODERN_ORCHESTRATOR --config '$TEST_CONFIG' --phase infra 2>&1" \
         "dependency_error_handling"
     
     _log_info "Error handling comparison tests completed"
@@ -296,7 +296,7 @@ _test_performance_comparison() {
         "$MODERN_ORCHESTRATOR --help >/dev/null"
     
     _run_performance_test "dbt_orchestrator_startup_time" \
-        "$LEGACY_DBT_ORCHESTRATOR --help >/dev/null 2>&1 || true" \
+        "$LEGACY_DBT_ORCHESTRATOR --help >/dev/null 2>&1" \
         "$MODERN_DBT_ORCHESTRATOR --help >/dev/null"
     
     # Test memory usage validation
