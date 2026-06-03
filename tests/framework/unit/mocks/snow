@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Mock snow command for testing
+
+case "$1" in
+    "connection")
+        case "$2" in
+            "list")
+                echo '{"connections": [{"name": "test-admin", "is_default": true}]}'
+                ;;
+            "test")
+                echo "Connection test successful"
+                exit 0
+                ;;
+            *)
+                echo "Unknown connection command: $2"
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "Unknown snow command: $1"
+        exit 1
+        ;;
+esac
