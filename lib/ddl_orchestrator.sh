@@ -693,8 +693,8 @@ TEMPLATE SUBSTITUTION:
 EOF
 }
 
-# Handle --help flag when script is executed directly
-if [[ "${1:-}" == "--help" ]]; then
+# Handle --help flag when script is executed directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" && "${1:-}" == "--help" ]]; then
     show_ddl_orchestrator_help
     exit 0
 fi
