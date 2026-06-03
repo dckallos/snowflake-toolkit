@@ -25,4 +25,8 @@ fi
 echo "==> brew install snowflake-cli"
 brew install snowflake-cli
 
+echo "==> brew install yq (required for domain-agnostic framework)"
+brew install yq
+
 echo "installed: $(snow --version)"
+echo "installed: yq version $(yq --version)"
