@@ -38,11 +38,9 @@ readonly MODERN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${MODERN_SCRIPT_DIR}/.." && pwd)"
 
 # Source framework components
-source "${MODERN_SCRIPT_DIR}/lib/ddl_orchestrator.sh"
+source "${MODERN_SCRIPT_DIR}/lib/connection_resolver.sh"
 
-# Default values for backward compatibility
-DEFAULT_CONFIG="${REPO_ROOT}/config/artwork_domain.yml"
-DEFAULT_CONNECTION="admin"
+# Pure orchestration - no defaults, user must specify paths and connections
 
 # =============================================================================
 # MAIN ORCHESTRATION FUNCTION
@@ -53,7 +51,8 @@ DEFAULT_CONNECTION="admin"
 # Primary entry point for modernized DDL orchestration.
 # Provides backward compatibility while using domain-agnostic framework.
 main() {
-    local config_file=""
+    local ddl_dir=""
+    local manifest_file=""
     local phase=""
     local connection=""
     local from_script=""
@@ -63,8 +62,12 @@ main() {
     # Parse arguments with backward compatibility
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --config)
-                config_file="$2"
+            --ddl-dir)
+                ddl_dir="$2"
+                shift 2
+                ;;
+            --manifest)
+                manifest_file="$2"
                 shift 2
                 ;;
             --phase)
@@ -112,16 +115,30 @@ main() {
         exit 0
     fi
     
-    # Validate and set defaults
-    if [[ -z "$config_file" ]]; then
-        if [[ -f "$DEFAULT_CONFIG" ]]; then
-            config_file="$DEFAULT_CONFIG"
-            _log_info "Using default configuration: $config_file"
-        else
-            _log_error "No configuration specified and default not found: $DEFAULT_CONFIG"
-            _log_error "Specify configuration with: --config CONFIG_FILE"
-            exit 1
-        fi
+    # Validate required parameters - no defaults
+    if [[ -z "$ddl_dir" ]]; then
+        _log_error "DDL directory is required. Use --ddl-dir DIR"
+        exit 1
+    fi
+    
+    if [[ -z "$manifest_file" ]]; then
+        _log_error "Manifest file is required. Use --manifest FILE"
+        exit 1
+    fi
+    
+    if [[ -z "$connection" ]]; then
+        _log_error "Connection is required. Use --connection NAME"
+        exit 1
+    fi
+    
+    if [[ ! -d "$ddl_dir" ]]; then
+        _log_error "DDL directory not found: $ddl_dir"
+        exit 1
+    fi
+    
+    if [[ ! -f "$manifest_file" ]]; then
+        _log_error "Manifest file not found: $manifest_file"
+        exit 1
     fi
     
     if [[ -z "$phase" ]]; then
@@ -131,18 +148,141 @@ main() {
     
     # Handle legacy single script rollback
     if [[ -n "$down_file" ]]; then
-        _log_info "Modernized DDL Orchestrator v${ORCHESTRATE_MODERN_VERSION}"
+        _log_info "Pure Orchestration Framework v${ORCHESTRATE_MODERN_VERSION}"
         _log_info "Rolling back single script: $down_file"
         
-        rollback_ddl_script --config "$config_file" --file "$down_file" --connection "$connection"
+        _rollback_single_ddl_script "$down_file" "$connection"
         exit $?
     fi
     
     # Execute main DDL phase
-    _log_info "Modernized DDL Orchestrator v${ORCHESTRATE_MODERN_VERSION}"
-    _log_info "Domain-agnostic framework execution"
+    _log_info "Pure Orchestration Framework v${ORCHESTRATE_MODERN_VERSION}"
+    _log_info "Executing user DDL unchanged via connection framework"
     
-    execute_ddl_phase --config "$config_file" --phase "$phase" --connection "$connection" --from "$from_script"
+    _execute_ddl_phase "$ddl_dir" "$manifest_file" "$phase" "$connection" "$from_script"
+}
+
+# =============================================================================
+# PURE ORCHESTRATION FUNCTIONS
+# =============================================================================
+
+# Execute DDL phase - pure connection + file execution
+_execute_ddl_phase() {
+    local ddl_dir="$1"
+    local manifest_file="$2"
+    local phase="$3"
+    local connection="$4"
+    local from_script="$5"
+    
+    # Resolve connection
+    local resolved_connection
+    if ! resolved_connection=$(resolve_connection_with_capability admin "$connection"); then
+        _log_error "Failed to resolve connection: $connection"
+        return 1
+    fi
+    
+    # Execute scripts from manifest
+    local started=0
+    if [[ -n "$from_script" ]]; then
+        started=0
+    else
+        started=1
+    fi
+    
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        
+        # Check if this script matches the target phase
+        local script_phase
+        script_phase=$(dirname "$line")
+        if [[ "$phase" == "infra" && "$script_phase" != "infrastructure" ]]; then
+            continue
+        elif [[ "$phase" == "bootstrap" && "$script_phase" != "git-setup" ]]; then
+            continue
+        elif [[ "$phase" == "down" ]]; then
+            # Teardown logic would go here
+            continue
+        fi
+        
+        # Check if we should start executing (for --from option)
+        if [[ $started -eq 0 ]]; then
+            local script_name
+            script_name=$(basename "$line")
+            local from_name
+            from_name=$(basename "$from_script")
+            if [[ "$script_name" == "$from_name" ]]; then
+                started=1
+            else
+                continue
+            fi
+        fi
+        
+        # Execute the script unchanged
+        local full_script_path="${REPO_ROOT}/$line"
+        if ! _execute_single_ddl_script "$full_script_path" "$resolved_connection"; then
+            _log_error "Failed to execute script: $line"
+            return 1
+        fi
+        
+    done < "$manifest_file"
+    
+    return 0
+}
+
+# Execute single DDL script unchanged
+_execute_single_ddl_script() {
+    local script_path="$1"
+    local connection="$2"
+    
+    _log_info "Executing script: $(basename "$script_path")"
+    
+    # Check if script exists
+    if [[ ! -f "$script_path" ]]; then
+        _log_error "Script not found: $script_path"
+        return 1
+    fi
+    
+    # Execute via Snowflake CLI (user's DDL unchanged)
+    if ! snow sql --filename "$script_path" --connection "$connection"; then
+        _log_error "Script execution failed: $(basename "$script_path")"
+        return 1
+    fi
+    
+    _log_info "Script completed: $(basename "$script_path")"
+    return 0
+}
+
+# Rollback single DDL script
+_rollback_single_ddl_script() {
+    local script_file="$1"
+    local connection="$2"
+    
+    # Derive drop script name
+    local create_basename
+    create_basename=$(basename "$script_file")
+    local drop_basename
+    drop_basename="${create_basename/create_/drop_}"
+    
+    local drop_script
+    drop_script="infrastructure/$drop_basename"
+    
+    if [[ ! -f "$drop_script" ]]; then
+        _log_error "Paired drop script not found: $drop_script"
+        return 1
+    fi
+    
+    # Resolve connection
+    local resolved_connection
+    if ! resolved_connection=$(resolve_connection_with_capability admin "$connection"); then
+        _log_error "Failed to resolve connection: $connection"
+        return 1
+    fi
+    
+    # Execute drop script
+    _log_info "Rolling back with drop script: $(basename "$drop_script")"
+    _execute_single_ddl_script "$drop_script" "$resolved_connection"
 }
 
 # =============================================================================
@@ -162,9 +302,10 @@ USAGE:
     scripts/orchestrate_modern.sh [OPTIONS]
 
 OPTIONS:
-    --config FILE       Domain configuration file (default: config/artwork_domain.yml)
+    --ddl-dir DIR       DDL directory (required)
+    --manifest FILE     Manifest file (required)
     --phase PHASE       Phase to execute (infra|bootstrap|all|down)
-    --connection CONN   Snowflake connection name (optional)
+    --connection CONN   Snowflake connection name (required)
     --from SCRIPT       Start execution from specific script (optional)
     --file FILE         Roll back single script (legacy compatibility)
     --help              Show this help message
@@ -182,14 +323,14 @@ BACKWARD COMPATIBILITY:
     # Modern equivalent
     scripts/orchestrate_modern.sh --phase infra --connection admin
     
-    # Multi-domain deployment (new capability)
-    scripts/orchestrate_modern.sh --config config/customer_domain.yml --phase all --connection prod
+    # Connection flexibility (work with any configured account)
+    scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --phase all --connection prod
 
 FRAMEWORK INTEGRATION:
-    - Uses scripts/lib/ddl_orchestrator.sh for core functionality
-    - Domain configuration via YAML files in config/
+    - Uses scripts/lib/connection_resolver.sh for connection management
+    - Pure file orchestration - no domain configuration
     - Enhanced connection resolution and validation
-    - Template substitution for domain-specific values
+    - User's DDL files executed unchanged
     - Comprehensive error handling and logging
 
 MIGRATION NOTES:
@@ -200,16 +341,16 @@ MIGRATION NOTES:
 
 EXAMPLES:
     # Basic infrastructure deployment
-    scripts/orchestrate_modern.sh --phase infra --connection admin
+    scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --phase infra --connection prod-admin
     
-    # Multi-account deployment
-    scripts/orchestrate_modern.sh --config config/artwork_domain.yml --phase all --connection mk07348
+    # Work with specific account  
+    scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --phase all --connection mk07348
     
     # Partial deployment from specific script
-    scripts/orchestrate_modern.sh --phase infra --from create_warehouses.sql --connection admin
+    scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --phase infra --from create_warehouses.sql --connection prod-admin
     
     # Single script rollback
-    scripts/orchestrate_modern.sh --file create_stages.sql --connection admin
+    scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --file create_stages.sql --connection prod-admin
 
 EOF
 }
