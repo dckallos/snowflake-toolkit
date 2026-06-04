@@ -58,6 +58,7 @@ main() {
     local from_script=""
     local down_file=""
     local show_help=false
+    declare -a variables=()
     
     # Parse arguments with backward compatibility
     while [[ $# -gt 0 ]]; do
@@ -95,6 +96,11 @@ main() {
             --file)
                 # Legacy single script rollback
                 down_file="$2"
+                shift 2
+                ;;
+            --var)
+                # Template variable for DDL substitution
+                variables+=("$2")
                 shift 2
                 ;;
             -h|--help|help)
@@ -159,7 +165,7 @@ main() {
     _log_info "Pure Orchestration Framework v${ORCHESTRATE_MODERN_VERSION}"
     _log_info "Executing user DDL unchanged via connection framework"
     
-    _execute_ddl_phase "$ddl_dir" "$manifest_file" "$phase" "$connection" "$from_script"
+    _execute_ddl_phase "$ddl_dir" "$manifest_file" "$phase" "$connection" "$from_script" "${variables[@]+"${variables[@]}"}"
 }
 
 # =============================================================================
@@ -173,6 +179,11 @@ _execute_ddl_phase() {
     local phase="$3"
     local connection="$4"
     local from_script="$5"
+    shift 5
+    declare -a variables=()
+    if [[ $# -gt 0 ]]; then
+        variables=("$@")
+    fi
     
     # Resolve connection
     local resolved_connection
@@ -221,7 +232,7 @@ _execute_ddl_phase() {
         
         # Execute the script unchanged
         local full_script_path="${REPO_ROOT}/$line"
-        if ! _execute_single_ddl_script "$full_script_path" "$resolved_connection"; then
+        if ! _execute_single_ddl_script "$full_script_path" "$resolved_connection" "${variables[@]+"${variables[@]}"}"; then
             _log_error "Failed to execute script: $line"
             return 1
         fi
@@ -231,10 +242,25 @@ _execute_ddl_phase() {
     return 0
 }
 
-# Execute single DDL script unchanged
+# Execute single DDL script unchanged with optional variable substitution
 _execute_single_ddl_script() {
     local script_path="$1"
     local connection="$2"
+    shift 2
+    declare -a variables=()
+    if [[ $# -gt 0 ]]; then
+        variables=("$@")
+    fi
+    
+    # Build variable arguments for snow sql
+    local -a var_args=()
+    if [[ ${#variables[@]} -gt 0 ]]; then
+        for var in "${variables[@]}"; do
+            if [[ -n "$var" ]]; then
+                var_args+=("-D" "$var")
+            fi
+        done
+    fi
     
     _log_info "Executing script: $(basename "$script_path")"
     
@@ -244,8 +270,8 @@ _execute_single_ddl_script() {
         return 1
     fi
     
-    # Execute via Snowflake CLI (user's DDL unchanged)
-    if ! snow sql --filename "$script_path" --connection "$connection"; then
+    # Execute via Snowflake CLI (user's DDL unchanged, with optional template substitution)
+    if ! snow sql --filename "$script_path" --connection "$connection" "${var_args[@]+"${var_args[@]}"}"; then
         _log_error "Script execution failed: $(basename "$script_path")"
         return 1
     fi
@@ -307,6 +333,7 @@ OPTIONS:
     --phase PHASE       Phase to execute (infra|bootstrap|all|down)
     --connection CONN   Snowflake connection name (required)
     --from SCRIPT       Start execution from specific script (optional)
+    --var NAME=VALUE    Template variable for DDL substitution (repeatable)
     --file FILE         Roll back single script (legacy compatibility)
     --help              Show this help message
 
@@ -342,6 +369,9 @@ MIGRATION NOTES:
 EXAMPLES:
     # Basic infrastructure deployment
     scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --phase infra --connection prod-admin
+    
+    # Deployment with template variables
+    scripts/orchestrate_modern.sh --ddl-dir git-setup/ --manifest scripts/manifest.txt --phase bootstrap --connection admin --var github_pat=ghp_example123
     
     # Work with specific account  
     scripts/orchestrate_modern.sh --ddl-dir infrastructure/ --manifest scripts/manifest.txt --phase all --connection mk07348
