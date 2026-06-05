@@ -84,19 +84,18 @@ echo "==> registering admin public key for user '${ADMIN_USER}' on account '${AC
 # for the loader). The env command creates a clean subprocess environment
 # with ONLY the variables we explicitly pass.
 #
-# We pipe the SQL file via --stdin (-i) rather than --filename because snow sql
-# v3.18+ splits content on semicolons (both --filename and --stdin + --variable),
-# which breaks Snowflake Scripting blocks (DECLARE...BEGIN...END).
-# To avoid this, we perform variable substitution via sed (replacing <% var %>
-# patterns ourselves) and pass --stdin WITHOUT --variable, so the template engine
-# is not invoked and no statement splitting occurs.
+# snow sql (v3.18) splits ALL input on semicolons -- --filename, --stdin, and
+# even --stdin with --enable-templating NONE. Snowflake Scripting blocks
+# (DECLARE...BEGIN...END) contain internal semicolons and get split incorrectly.
+# The only delivery method that avoids splitting is --query (-q) with the entire
+# block as a single string. We do variable substitution via sed, then pass the
+# rendered SQL as a --query argument.
 SQL_RENDERED="$(sed \
     -e "s|<% admin_user %>|${ADMIN_USER}|g" \
     -e "s|<% rsa_public_key %>|${PUBKEY}|g" \
     -e "s|<% rsa_public_key_fp %>|${PUBKEY_FP}|g" \
     "${SQL_FILE}")"
 
-echo "${SQL_RENDERED}" | \
 env -u SNOWFLAKE_PRIVATE_KEY_FILE \
     -u SNOWFLAKE_PRIVATE_KEY_PATH \
     -u PRIVATE_KEY_FILE \
@@ -109,7 +108,7 @@ env -u SNOWFLAKE_PRIVATE_KEY_FILE \
     -u SNOWFLAKE_AUTHENTICATOR \
     SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
 snow sql \
-    --stdin \
+    --query "${SQL_RENDERED}" \
     --temporary-connection \
     --account       "${ACCOUNT}" \
     --user          "${ADMIN_USER}" \
