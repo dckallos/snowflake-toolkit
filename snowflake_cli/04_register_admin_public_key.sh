@@ -116,7 +116,7 @@ snow sql \
     --role          ACCOUNTADMIN \
     --warehouse     "${WAREHOUSE}" \
     --authenticator snowflake \
-    --enable-templates NONE \
+    --enable-templating NONE \
     --enhanced-exit-codes
 
 echo "==> admin public key registered (dual-slot); check output above for slot assignment"
