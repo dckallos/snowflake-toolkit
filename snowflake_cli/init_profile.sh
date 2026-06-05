@@ -69,6 +69,43 @@ if [[ ! -f "${CONFIG_TOML}" ]]; then
     chmod 600 "${CONFIG_TOML}"
 fi
 
+# --- Detect a shadowing connections.toml ---------------------------------
+# Per the Snowflake CLI docs: when ~/.snowflake/connections.toml exists, snow
+# CLI reads connections ONLY from it and IGNORES every [connections.*] block in
+# config.toml. Other Snowflake tools (Cortex Code, the VS Code extension,
+# SnowConvert) create connections.toml, so a profile this script seeds in
+# config.toml can be silently invisible to `snow -c <conn>` -- the failure
+# surfaces downstream as "connection '<conn>' is not configured" even though
+# config.toml is correct. default_connection_name is always read from
+# config.toml, so it is unaffected. Note: connections.toml section names OMIT
+# the 'connections.' prefix, so [connections.${ADMIN_CONN}] here is
+# [${ADMIN_CONN}] there.
+CONNECTIONS_TOML="$(dirname "${CONFIG_TOML}")/connections.toml"
+if [[ -f "${CONNECTIONS_TOML}" ]]; then
+    if [[ -n "$(parse_toml_value "${ADMIN_CONN}" 'account' "${CONNECTIONS_TOML}")" ]]; then
+        cat <<EOF
+==> note: ${CONNECTIONS_TOML} exists and already defines [${ADMIN_CONN}].
+    snow CLI will use THAT definition and IGNORE config.toml's connections.
+    This script still seeds [${ADMIN_SECTION}] in config.toml for reference,
+    but verify the connections.toml copy of [${ADMIN_CONN}] is the correct one.
+EOF
+    else
+        cat >&2 <<EOF
+ERROR: ${CONNECTIONS_TOML} exists but has no [${ADMIN_CONN}] section.
+       snow CLI reads connections ONLY from connections.toml when it is present
+       and IGNORES the [${ADMIN_SECTION}] block this script seeds in
+       ${CONFIG_TOML}. Downstream phases (e.g. --phase admin) will fail with
+       "connection '${ADMIN_CONN}' is not configured".
+       Fix (pick one), then re-run:
+         A) add the connection to ${CONNECTIONS_TOML}, dropping the
+            'connections.' prefix -> [${ADMIN_CONN}]; or
+         B) remove/rename connections.toml so config.toml is used:
+              mv ${CONNECTIONS_TOML} ${CONNECTIONS_TOML}.bak
+EOF
+        exit 1
+    fi
+fi
+
 # --- Non-destructive guard: bail out if this admin profile already exists ---
 EXISTING_ACCOUNT="$(parse_toml_value "${ADMIN_SECTION}" 'account' "${CONFIG_TOML}")"
 if [[ -n "${EXISTING_ACCOUNT}" ]]; then

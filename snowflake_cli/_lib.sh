@@ -270,7 +270,9 @@ upsert_toml_toplevel_key() {
         }
         END {
             # No section header in the whole file and key never seen: append it.
-            if (!replaced) { emit() }
+            # Add a trailing blank line so a subsequent [section] append is
+            # separated, even if awk processed zero input records (empty file).
+            if (!replaced) { emit(); printf "\n" }
         }
     ' "${file}" > "${tmp}"
     local awk_rc=$?
@@ -641,6 +643,11 @@ upsert_toml_value_in_section() {
         rm -f "${tmp}"
         echo "error: failed to upsert [${section}].${key} in ${file}" >&2
         return 1
+    fi
+
+    # Guarantee a trailing newline (same guard as upsert_toml_toplevel_key).
+    if [[ -s "${tmp}" ]] && [[ "$(tail -c 1 "${tmp}" | wc -l)" -eq 0 ]]; then
+        printf '\n' >> "${tmp}"
     fi
 
     mv "${tmp}" "${file}"
