@@ -77,23 +77,18 @@ echo "==> local public key fingerprint: ${PUBKEY_FP}"
 # Prompt for the admin password if it was not pre-set (CI may pre-set it).
 resolve_admin_password_interactive
 
-echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}' (dual-slot aware)"
+echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}'"
 # Unset env vars that the snow CLI interprets as key-pair auth directives.
 # Without this, --temporary-connection + --authenticator snowflake fails when
 # the shell has SNOWFLAKE_PRIVATE_KEY_FILE exported (e.g. from sourcing .env
-# for the loader). The env command creates a clean subprocess environment
-# with ONLY the variables we explicitly pass.
+# for the loader).
 #
-# snow sql (v3.18) splits ALL input on semicolons -- --filename, --stdin, and
-# even --stdin with --enable-templating NONE. Snowflake Scripting blocks
-# (DECLARE...BEGIN...END) contain internal semicolons and get split incorrectly.
-# The only delivery method that avoids splitting is --query (-q) with the entire
-# block as a single string. We do variable substitution via sed, then pass the
-# rendered SQL as a --query argument.
+# snow sql (v3.18) splits ALL input on semicolons regardless of delivery method.
+# The SQL file is now a single ALTER USER statement (no semicolons, no scripting
+# block), so --query with sed-rendered content works correctly.
 SQL_RENDERED="$(sed \
     -e "s|<% admin_user %>|${ADMIN_USER}|g" \
     -e "s|<% rsa_public_key %>|${PUBKEY}|g" \
-    -e "s|<% rsa_public_key_fp %>|${PUBKEY_FP}|g" \
     "${SQL_FILE}")"
 
 env -u SNOWFLAKE_PRIVATE_KEY_FILE \
@@ -115,7 +110,6 @@ snow sql \
     --role          ACCOUNTADMIN \
     --warehouse     "${WAREHOUSE}" \
     --authenticator snowflake \
-    --enable-templating NONE \
     --enhanced-exit-codes
 
-echo "==> admin public key registered (dual-slot); check output above for slot assignment"
+echo "==> admin public key registered; fingerprint: ${PUBKEY_FP}"
