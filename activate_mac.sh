@@ -93,7 +93,10 @@ echo ""
 
 FAILED=0
 for conn in "${PROFILE}" "${PROFILE}_loader" "${PROFILE}_transformer"; do
-    if snow connection test -c "${conn}" >/dev/null 2>&1; then
+    if env -u SNOWFLAKE_ROLE -u SNOWFLAKE_USER -u SNOWFLAKE_ACCOUNT \
+           -u SNOWFLAKE_WAREHOUSE -u SNOWFLAKE_DATABASE \
+           -u SNOWFLAKE_PRIVATE_KEY_FILE -u SNOWFLAKE_AUTHENTICATOR \
+       snow connection test -c "${conn}" >/dev/null 2>&1; then
         echo "  ✅ ${conn}"
     else
         echo "  ❌ ${conn} -- FAILED"

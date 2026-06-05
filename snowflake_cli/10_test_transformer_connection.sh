@@ -19,10 +19,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 echo "==> snow connection test -c ${SNOW_LIB_TRANSFORMER_CONN} (SNOWFLAKE_JWT)"
+# Scrub SNOWFLAKE_* env vars that override config.toml connection settings.
+# Without this, SNOWFLAKE_ROLE from .env (ARTWORK_LOADER) leaks into the
+# transformer connection test and causes a "role not granted" error.
+env -u SNOWFLAKE_ROLE \
+    -u SNOWFLAKE_USER \
+    -u SNOWFLAKE_ACCOUNT \
+    -u SNOWFLAKE_WAREHOUSE \
+    -u SNOWFLAKE_DATABASE \
+    -u SNOWFLAKE_PRIVATE_KEY_FILE \
+    -u SNOWFLAKE_AUTHENTICATOR \
 snow connection test -c "${SNOW_LIB_TRANSFORMER_CONN}"
 
 echo
 echo "==> CURRENT_USER / CURRENT_ROLE round-trip"
+env -u SNOWFLAKE_ROLE \
+    -u SNOWFLAKE_USER \
+    -u SNOWFLAKE_ACCOUNT \
+    -u SNOWFLAKE_WAREHOUSE \
+    -u SNOWFLAKE_DATABASE \
+    -u SNOWFLAKE_PRIVATE_KEY_FILE \
+    -u SNOWFLAKE_AUTHENTICATOR \
 snow sql -c "${SNOW_LIB_TRANSFORMER_CONN}" -q "SELECT CURRENT_USER() AS u, CURRENT_ROLE() AS r;"
 
 echo
