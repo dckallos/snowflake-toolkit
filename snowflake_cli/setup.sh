@@ -46,6 +46,12 @@
 #            key-pair auth, then test the 'loader' connection). Requires
 #            `make iac` to have created the (TYPE = SERVICE) service user
 #            already. No env vars and no password required.
+#   transformer  dbt service-user bootstrap. Runs 09-10 (generate the
+#            transformer RSA key pair, register its public key on
+#            ARTWORK_TRANSFORMER_SVC via the admin JWT connection, rewrite
+#            [connections.transformer] for key-pair auth, then test it).
+#            Requires `make iac` to have created ARTWORK_TRANSFORMER_SVC
+#            (TYPE = SERVICE). No env vars and no password required.
 #   promote  Promote the admin connection from the initial account-default
 #            warehouse to ARTWORK_WH. Runs 08 (verify ARTWORK_WH exists,
 #            back up ~/.snowflake/config.toml, rewrite
@@ -63,17 +69,18 @@
 # ------------------------------------------------------------
 # Multi-account support
 # ------------------------------------------------------------
-# By default this suite manages the connection pair admin / loader (unchanged).
+# By default this suite manages the connection trio admin / loader / transformer.
 # To manage a SECOND Snowflake account, pass a profile label and every step
-# targets a namespaced connection pair + key files:
+# targets a namespaced connection set + key files:
 #
 #   ./setup.sh --profile clientb --phase all
-#     -> admin connection  = [connections.clientb]      key clientb_rsa_key.p8
-#     -> loader connection = [connections.clientb_loader] key clientb_loader_rsa_key.p8
+#     -> admin connection       = [connections.clientb]             key clientb_rsa_key.p8
+#     -> loader connection      = [connections.clientb_loader]      key clientb_loader_rsa_key.p8
+#     -> transformer connection = [connections.clientb_transformer] key clientb_transformer_rsa_key.p8
 #
-# Advanced: override either name explicitly with --admin-conn / --loader-conn.
-# With no flags the names are admin / loader and the historical
-# admin_rsa_key.p8 / loader_rsa_key.p8 key paths are preserved byte-for-byte.
+# Advanced: override names explicitly with --admin-conn / --loader-conn /
+# --transformer-conn. With no flags the names are admin / loader / transformer
+# and the historical admin_rsa_key.p8 / loader_rsa_key.p8 key paths are preserved.
 #
 # Inspect and switch the active account (these touch NO Snowflake objects):
 #   ./setup.sh --phase list                 # list profiles + mark the default
@@ -88,14 +95,15 @@ source "${SCRIPT_DIR}/_lib.sh"
 
 usage() {
     cat <<'EOF'
-usage: setup.sh [--profile LABEL | --admin-conn NAME --loader-conn NAME]
-                [--phase {prereq|init-profile|admin|loader|promote|all|list|switch}]
+usage: setup.sh [--profile LABEL | --admin-conn NAME --loader-conn NAME --transformer-conn NAME]
+                [--phase {prereq|init-profile|admin|loader|transformer|promote|all|list|switch}]
 
-  Connection selection (default pair: admin / loader):
+  Connection selection (default trio: admin / loader / transformer):
     --profile LABEL    target [connections.LABEL] + [connections.LABEL_loader]
-                       (key files LABEL_rsa_key.p8 / LABEL_loader_rsa_key.p8)
+                       + [connections.LABEL_transformer] (matching key files)
     --admin-conn NAME  explicit admin connection name (overrides --profile)
     --loader-conn NAME explicit loader connection name (overrides --profile)
+    --transformer-conn NAME explicit transformer connection name (overrides --profile)
 
   prereq   local-only steps 00-02 + init_profile.sh + step 03 (install snow,
            init dirs, keypair, seed [connections.<admin>] if missing, chmod)
@@ -116,6 +124,12 @@ usage: setup.sh [--profile LABEL | --admin-conn NAME --loader-conn NAME]
            Generates the loader key pair, registers it via the admin JWT
            connection, rewrites [connections.loader] for key-pair auth, and
            tests the connection. No env vars / no password required.
+  transformer
+           dbt service-user bootstrap (steps 09-10); requires 'make iac' to
+           have already created the (TYPE = SERVICE) ARTWORK_TRANSFORMER_SVC.
+           Generates the transformer key pair, registers it via the admin JWT
+           connection, rewrites [connections.transformer] for key-pair auth,
+           and tests the connection. No env vars / no password required.
   promote  promote admin connection to ARTWORK_WH (step 08); requires
            'make iac' to have already created ARTWORK_WH. Rewrites
            [connections.admin].warehouse in ~/.snowflake/config.toml,
@@ -138,19 +152,21 @@ PHASE="all"
 PROFILE=""
 ADMIN_CONN_FLAG=""
 LOADER_CONN_FLAG=""
+TRANSFORMER_CONN_FLAG=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --phase)       PHASE="${2:-}";            shift 2 ;;
         --profile)     PROFILE="${2:-}";          shift 2 ;;
         --admin-conn)  ADMIN_CONN_FLAG="${2:-}";  shift 2 ;;
         --loader-conn) LOADER_CONN_FLAG="${2:-}"; shift 2 ;;
+        --transformer-conn) TRANSFORMER_CONN_FLAG="${2:-}"; shift 2 ;;
         -h|--help|help) usage ;;
         *) echo "error: unknown argument '$1'" >&2; usage ;;
     esac
 done
 
 case "${PHASE}" in
-    prereq|init-profile|admin|loader|promote|all|list|switch) ;;
+    prereq|init-profile|admin|loader|transformer|promote|all|list|switch) ;;
     *) echo "error: unknown phase '${PHASE}'" >&2; usage ;;
 esac
 
@@ -160,17 +176,20 @@ esac
 if [[ -n "${PROFILE}" ]]; then
     ADMIN_CONN="${ADMIN_CONN_FLAG:-${PROFILE}}"
     LOADER_CONN="${LOADER_CONN_FLAG:-${PROFILE}_loader}"
+    TRANSFORMER_CONN="${TRANSFORMER_CONN_FLAG:-${PROFILE}_transformer}"
 else
     ADMIN_CONN="${ADMIN_CONN_FLAG:-admin}"
     LOADER_CONN="${LOADER_CONN_FLAG:-loader}"
+    TRANSFORMER_CONN="${TRANSFORMER_CONN_FLAG:-transformer}"
 fi
 
 # Validate (these names become TOML section keys and `snow -c` args) and export
 # so every child script resolves the same target account via _lib.sh.
 validate_conn_name "${ADMIN_CONN}"  || exit $?
 validate_conn_name "${LOADER_CONN}" || exit $?
-export ADMIN_CONN LOADER_CONN
-echo "==> connections: admin='${ADMIN_CONN}' loader='${LOADER_CONN}'"
+validate_conn_name "${TRANSFORMER_CONN}" || exit $?
+export ADMIN_CONN LOADER_CONN TRANSFORMER_CONN
+echo "==> connections: admin='${ADMIN_CONN}' loader='${LOADER_CONN}' transformer='${TRANSFORMER_CONN}'"
 
 chmod_children() {
     # NOTE: scripts/bootstrap_chmod.sh is the CANONICAL chmod policy for
@@ -232,6 +251,16 @@ phase_loader() {
     run 07_test_loader_connection.sh
 }
 
+phase_transformer() {
+    # No env-var prerequisites: 09_setup_transformer_keypair.sh generates the
+    # transformer RSA key pair lazily, registers the public key on
+    # ARTWORK_TRANSFORMER_SVC via the admin JWT connection, and rewrites
+    # [connections.transformer] for key-pair auth. `make iac` must have already
+    # created the (TYPE = SERVICE) user.
+    run 09_setup_transformer_keypair.sh
+    run 10_test_transformer_connection.sh
+}
+
 phase_promote() {
     # No pre-flight env-var checks: 08_promote_admin_warehouse.sh sources
     # _lib.sh to resolve the admin user from ~/.snowflake/config.toml and
@@ -260,6 +289,7 @@ case "${PHASE}" in
     init-profile) phase_init_profile ;;
     admin)        phase_admin ;;
     loader)       phase_loader ;;
+    transformer)  phase_transformer ;;
     promote)      phase_promote ;;
     list)         phase_list ;;
     switch)       phase_switch ;;
@@ -282,8 +312,13 @@ Next steps (in this order):
      # generates the loader key pair, registers it on ARTWORK_LOADER_SVC via
      # the admin JWT connection, and switches [connections.loader] to
      # key-pair auth -- no password anywhere.
-  4. In .env, point the Python extractor at the same private key:
+  4. ./scripts/snowflake_cli/setup.sh --phase transformer
+     # same flow for ARTWORK_TRANSFORMER_SVC (the dbt identity); switches
+     # [connections.transformer] to key-pair auth.
+  5. In .env, point the Python extractor + dbt at their private keys:
      #   SNOWFLAKE_PRIVATE_KEY_FILE=~/.snowflake/keys/loader_rsa_key.p8
+     #   DBT_SNOWFLAKE_USER=ARTWORK_TRANSFORMER_SVC
+     #   DBT_SNOWFLAKE_PRIVATE_KEY_PATH=~/.snowflake/keys/transformer_rsa_key.p8
 
 Note: --phase loader needs NO env vars and no password. The loader has no
 chicken-and-egg problem -- a working admin JWT connection already exists, so

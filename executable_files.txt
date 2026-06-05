@@ -22,4 +22,6 @@ scripts/snowflake_cli/05_verify_admin_jwt.sh
 scripts/snowflake_cli/06_setup_loader_keypair.sh
 scripts/snowflake_cli/07_test_loader_connection.sh
 scripts/snowflake_cli/08_promote_admin_warehouse.sh
+scripts/snowflake_cli/09_setup_transformer_keypair.sh
+scripts/snowflake_cli/10_test_transformer_connection.sh
 scripts/snowflake_cli/setup.sh

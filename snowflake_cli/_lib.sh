@@ -49,6 +49,11 @@ SNOW_LIB_DEFAULT_WAREHOUSE="${SNOW_LIB_DEFAULT_WAREHOUSE:-ARTWORK_WH}"
 # ------------------------------------------------------------
 SNOW_LIB_ADMIN_CONN="${ADMIN_CONN:-admin}"
 SNOW_LIB_LOADER_CONN="${LOADER_CONN:-loader}"
+# Transformer (dbt) service connection. Same namespacing model as loader: the
+# default name 'transformer' preserves a stable single-account path; setup.sh
+# exports TRANSFORMER_CONN (from --profile -> <profile>_transformer, or
+# --transformer-conn) so child scripts target a consistent account.
+SNOW_LIB_TRANSFORMER_CONN="${TRANSFORMER_CONN:-transformer}"
 SNOW_LIB_KEY_DIR="${SNOW_LIB_KEY_DIR:-${HOME}/.snowflake/keys}"
 
 # validate_conn_name <name>
@@ -76,6 +81,14 @@ admin_key_path() {
 }
 loader_key_path() {
     printf '%s/%s_rsa_key.%s' "${SNOW_LIB_KEY_DIR}" "${SNOW_LIB_LOADER_CONN}" "${1:-p8}"
+}
+# transformer_key_path [p8|pub]
+#
+# Derive the key-file path for the active transformer (dbt) connection, mirroring
+# loader_key_path. Default name 'transformer' yields transformer_rsa_key.*; any
+# other name (e.g. mk07348_transformer) is namespaced so accounts never collide.
+transformer_key_path() {
+    printf '%s/%s_rsa_key.%s' "${SNOW_LIB_KEY_DIR}" "${SNOW_LIB_TRANSFORMER_CONN}" "${1:-p8}"
 }
 
 # How many timestamped config.toml.bak.* files to retain after a mutating
