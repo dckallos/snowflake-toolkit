@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # ============================================================
-# 04_register_admin_public_key.sh -- One-shot bootstrap: register the admin
-# RSA public key against the admin Snowflake user using password auth.
+# 04_register_admin_public_key.sh -- Register the admin RSA public key
+# into the first available slot (dual-device aware).
 #
-# This is the ONLY snow CLI call in the project that uses password auth and
-# the ONLY call that bypasses ~/.snowflake/config.toml for connection
-# definition (every connection parameter is passed on the command line).
-# After this call succeeds, the JWT-based 'admin' connection in
-# config.toml works end-to-end and every subsequent snow sql call uses
-# '-c admin --filename ...'.
+# This script uses password auth via --temporary-connection to break the
+# chicken-and-egg: the key pair we are registering cannot authenticate
+# until this script succeeds. After it succeeds, JWT auth works end-to-end.
+#
+# Dual-device support:
+#   Each Mac (or CI runner) generates its own RSA key pair. This script
+#   computes the SHA-256 fingerprint of the local public key and passes it
+#   to register_admin_public_key.sql, which uses Snowflake Scripting to:
+#     1. Check if this key is already registered (no-op if so).
+#     2. Pick the first empty slot (RSA_PUBLIC_KEY or RSA_PUBLIC_KEY_2).
+#     3. If both slots are occupied by OTHER keys, overwrite slot 2.
+#   Result: two devices can independently run --phase admin / --phase all
+#   and both will authenticate without interfering with each other.
 #
 # Zero-export resolution order (handled by _lib.sh helpers):
 #   SNOWFLAKE_ACCOUNT     env var -> [connections.admin].account in config.toml
@@ -18,25 +25,13 @@
 #   SNOWFLAKE_PASSWORD    env var -> interactive `read -rs` prompt
 #
 # The admin password is needed 1-3 times per year (bootstrap + key
-# rotations) and is intentionally never written to disk. After this script
-# returns, JWT auth takes over for every subsequent snow CLI invocation.
-#
-# Why `--temporary-connection`: without it, `snow sql` loads the default
-# connection from ~/.snowflake/config.toml ([connections.admin], which
-# already references private_key_file) and merges the CLI flags on top.
-# The CLI then refuses to combine a populated private_key_file with
-# `--authenticator snowflake` ("Private Key authentication requires
-# authenticator set to SNOWFLAKE_JWT"). `--temporary-connection` (alias
-# `-x`) builds the connection PURELY from CLI flags and ignores every
-# named connection in config.toml, which is exactly the semantic we want
-# for this single password-auth bootstrap call.
+# rotations) and is intentionally never written to disk.
 #
 # Optional env:
-#   ADMIN_PUBLIC_KEY_FILE defaults to ~/.snowflake/keys/admin_rsa_key.pub
+#   ADMIN_PUBLIC_KEY_FILE defaults to ~/.snowflake/keys/<profile>_rsa_key.pub
 #   SQL_FILE              defaults to git-setup/operator/register_admin_public_key.sql
 #
-# Idempotent: ALTER USER ... SET RSA_PUBLIC_KEY with the same value is a
-# no-op; re-running with a new key value rotates the credential.
+# Idempotent: re-running with the same key is a no-op (fingerprint match).
 # ============================================================
 set -euo pipefail
 
@@ -47,8 +42,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 # Preflight: config.toml must exist with a seeded [connections.admin] block so
-# the resolve_* helpers have something to read. A missing file yields the
-# actionable init-profile hint rather than three separate bare resolve errors.
+# the resolve_* helpers have something to read.
 if [[ ! -f "${SNOW_LIB_CONFIG_TOML}" ]]; then
     echo "error: config.toml not found: ${SNOW_LIB_CONFIG_TOML}" >&2
     echo "       seed it first with:" >&2
@@ -71,10 +65,19 @@ SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.
 # --variable value.
 PUBKEY="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${PUBLIC_KEY_FILE}")"
 
+# Compute the SHA-256 fingerprint matching Snowflake's format:
+#   SHA256:<base64(sha256(DER-encoded-public-key))>
+# The .pub file is PEM; openssl converts it to DER, then we hash + base64.
+PUBKEY_FP="SHA256:$(openssl rsa -pubin -in "${PUBLIC_KEY_FILE}" -outform DER 2>/dev/null \
+    | openssl dgst -sha256 -binary \
+    | openssl base64 -A)"
+
+echo "==> local public key fingerprint: ${PUBKEY_FP}"
+
 # Prompt for the admin password if it was not pre-set (CI may pre-set it).
 resolve_admin_password_interactive
 
-echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}'"
+echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}' (dual-slot aware)"
 SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
 snow sql \
     --temporary-connection \
@@ -86,6 +89,7 @@ snow sql \
     --filename      "${SQL_FILE}" \
     --variable      "admin_user=${ADMIN_USER}" \
     --variable      "rsa_public_key=${PUBKEY}" \
+    --variable      "rsa_public_key_fp=${PUBKEY_FP}" \
     --enhanced-exit-codes
 
-echo "==> admin public key registered; RSA_PUBLIC_KEY_FP populated"
+echo "==> admin public key registered (dual-slot); check output above for slot assignment"

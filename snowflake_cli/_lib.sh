@@ -470,11 +470,19 @@ verify_admin_jwt_full() {
     local pubkey
     pubkey="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${pubkey_file}")"
 
+    # Compute SHA-256 fingerprint matching Snowflake's format (SHA256:<base64>).
+    local pubkey_fp
+    pubkey_fp="SHA256:$(openssl rsa -pubin -in "${pubkey_file}" -outform DER 2>/dev/null \
+        | openssl dgst -sha256 -binary \
+        | openssl base64 -A)"
+
     echo "==> JWT auth check 1/3: re-apply ${sql_file##*/} via -c ${SNOW_LIB_ADMIN_CONN}"
+    echo "    local fingerprint: ${pubkey_fp}"
     snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
         --filename "${sql_file}" \
         --variable "admin_user=${admin_user}" \
         --variable "rsa_public_key=${pubkey}" \
+        --variable "rsa_public_key_fp=${pubkey_fp}" \
         --enhanced-exit-codes
 
     echo
