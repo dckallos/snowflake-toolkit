@@ -4,6 +4,7 @@
 # One path per line, relative to repo root. Blank lines and #-comments
 # are ignored. This data file is NOT itself executable.
 # Keep alphabetized within each subtree for easy diffing.
+scripts/activate_mac.sh
 scripts/apply_sql.sh
 scripts/bootstrap_chmod.sh
 scripts/check.sh
