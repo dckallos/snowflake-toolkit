@@ -78,7 +78,22 @@ echo "==> local public key fingerprint: ${PUBKEY_FP}"
 resolve_admin_password_interactive
 
 echo "==> registering admin public key for user '${ADMIN_USER}' on account '${ACCOUNT}' (dual-slot aware)"
-SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
+# Unset env vars that the snow CLI interprets as key-pair auth directives.
+# Without this, --temporary-connection + --authenticator snowflake fails when
+# the shell has SNOWFLAKE_PRIVATE_KEY_FILE exported (e.g. from sourcing .env
+# for the loader). The env command creates a clean subprocess environment
+# with ONLY the variables we explicitly pass.
+env -u SNOWFLAKE_PRIVATE_KEY_FILE \
+    -u SNOWFLAKE_PRIVATE_KEY_PATH \
+    -u PRIVATE_KEY_FILE \
+    -u PRIVATE_KEY_PATH \
+    -u SNOWFLAKE_ACCOUNT \
+    -u SNOWFLAKE_USER \
+    -u SNOWFLAKE_ROLE \
+    -u SNOWFLAKE_WAREHOUSE \
+    -u SNOWFLAKE_DATABASE \
+    -u SNOWFLAKE_AUTHENTICATOR \
+    SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
 snow sql \
     --temporary-connection \
     --account       "${ACCOUNT}" \
