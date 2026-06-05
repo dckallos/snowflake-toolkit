@@ -83,6 +83,12 @@ echo "==> registering admin public key for user '${ADMIN_USER}' on account '${AC
 # the shell has SNOWFLAKE_PRIVATE_KEY_FILE exported (e.g. from sourcing .env
 # for the loader). The env command creates a clean subprocess environment
 # with ONLY the variables we explicitly pass.
+#
+# We pipe the SQL file via --stdin (-i) rather than --filename because snow sql
+# v3.18+ splits --filename content on semicolons, which breaks Snowflake Scripting
+# blocks (DECLARE...BEGIN...END). --stdin sends the entire content as one unit.
+# The --variable / -D template engine still works with --stdin.
+cat "${SQL_FILE}" | \
 env -u SNOWFLAKE_PRIVATE_KEY_FILE \
     -u SNOWFLAKE_PRIVATE_KEY_PATH \
     -u PRIVATE_KEY_FILE \
@@ -95,13 +101,13 @@ env -u SNOWFLAKE_PRIVATE_KEY_FILE \
     -u SNOWFLAKE_AUTHENTICATOR \
     SNOWFLAKE_PASSWORD="${SNOWFLAKE_PASSWORD}" \
 snow sql \
+    --stdin \
     --temporary-connection \
     --account       "${ACCOUNT}" \
     --user          "${ADMIN_USER}" \
     --role          ACCOUNTADMIN \
     --warehouse     "${WAREHOUSE}" \
     --authenticator snowflake \
-    --filename      "${SQL_FILE}" \
     --variable      "admin_user=${ADMIN_USER}" \
     --variable      "rsa_public_key=${PUBKEY}" \
     --variable      "rsa_public_key_fp=${PUBKEY_FP}" \
