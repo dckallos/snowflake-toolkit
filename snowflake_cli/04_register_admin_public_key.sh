@@ -85,10 +85,18 @@ echo "==> registering admin public key for user '${ADMIN_USER}' on account '${AC
 # with ONLY the variables we explicitly pass.
 #
 # We pipe the SQL file via --stdin (-i) rather than --filename because snow sql
-# v3.18+ splits --filename content on semicolons, which breaks Snowflake Scripting
-# blocks (DECLARE...BEGIN...END). --stdin sends the entire content as one unit.
-# The --variable / -D template engine still works with --stdin.
-cat "${SQL_FILE}" | \
+# v3.18+ splits content on semicolons (both --filename and --stdin + --variable),
+# which breaks Snowflake Scripting blocks (DECLARE...BEGIN...END).
+# To avoid this, we perform variable substitution via sed (replacing <% var %>
+# patterns ourselves) and pass --stdin WITHOUT --variable, so the template engine
+# is not invoked and no statement splitting occurs.
+SQL_RENDERED="$(sed \
+    -e "s|<% admin_user %>|${ADMIN_USER}|g" \
+    -e "s|<% rsa_public_key %>|${PUBKEY}|g" \
+    -e "s|<% rsa_public_key_fp %>|${PUBKEY_FP}|g" \
+    "${SQL_FILE}")"
+
+echo "${SQL_RENDERED}" | \
 env -u SNOWFLAKE_PRIVATE_KEY_FILE \
     -u SNOWFLAKE_PRIVATE_KEY_PATH \
     -u PRIVATE_KEY_FILE \
@@ -108,9 +116,7 @@ snow sql \
     --role          ACCOUNTADMIN \
     --warehouse     "${WAREHOUSE}" \
     --authenticator snowflake \
-    --variable      "admin_user=${ADMIN_USER}" \
-    --variable      "rsa_public_key=${PUBKEY}" \
-    --variable      "rsa_public_key_fp=${PUBKEY_FP}" \
+    --enable-templates NONE \
     --enhanced-exit-codes
 
 echo "==> admin public key registered (dual-slot); check output above for slot assignment"
