@@ -45,6 +45,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 LOADER_USER="${LOADER_USER:-ARTWORK_LOADER_SVC}"
+LOADER_ROLE="${LOADER_ROLE:-ARTWORK_LOADER}"
+LOADER_WAREHOUSE="${LOADER_WAREHOUSE:-${SNOW_LIB_DEFAULT_WAREHOUSE}}"
 KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${LOADER_PRIVATE_KEY:-$(loader_key_path p8)}"
 PUBLIC_KEY="${LOADER_PUBLIC_KEY:-$(loader_key_path pub)}"
@@ -86,10 +88,15 @@ snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
 ACCOUNT="$(resolve_admin_account)"
 
 echo "==> updating [${SNOW_LIB_LOADER_CONN}] in ${CONNECTIONS_TOML} for key-pair auth"
-upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'account'          "${ACCOUNT}"      "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'user'             "${LOADER_USER}"  "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'private_key_path' "${PRIVATE_KEY}"  "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'account'          "${ACCOUNT}"          "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'user'             "${LOADER_USER}"      "${CONNECTIONS_TOML}"
+# role + warehouse are written EXPLICITLY so a stray SNOWFLAKE_ROLE /
+# SNOWFLAKE_WAREHOUSE in the shell (e.g. exported from the loader .env) cannot
+# leak into the connection -- a toml value takes precedence over the env var.
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'role'             "${LOADER_ROLE}"      "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'warehouse'        "${LOADER_WAREHOUSE}" "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'       "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'private_key_path' "${PRIVATE_KEY}"      "${CONNECTIONS_TOML}"
 
 cat <<EOF
 

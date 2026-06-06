@@ -42,6 +42,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
 TRANSFORMER_USER="${TRANSFORMER_USER:-ARTWORK_TRANSFORMER_SVC}"
+TRANSFORMER_ROLE="${TRANSFORMER_ROLE:-ARTWORK_TRANSFORMER}"
+TRANSFORMER_WAREHOUSE="${TRANSFORMER_WAREHOUSE:-${SNOW_LIB_DEFAULT_WAREHOUSE}}"
 KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${TRANSFORMER_PRIVATE_KEY:-$(transformer_key_path p8)}"
 PUBLIC_KEY="${TRANSFORMER_PUBLIC_KEY:-$(transformer_key_path pub)}"
@@ -83,10 +85,17 @@ snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
 ACCOUNT="$(resolve_admin_account)"
 
 echo "==> updating [${SNOW_LIB_TRANSFORMER_CONN}] in ${CONNECTIONS_TOML} for key-pair auth"
-upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'account'          "${ACCOUNT}"           "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'user'             "${TRANSFORMER_USER}" "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'       "${CONNECTIONS_TOML}"
-upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'private_key_path' "${PRIVATE_KEY}"      "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'account'          "${ACCOUNT}"               "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'user'             "${TRANSFORMER_USER}"      "${CONNECTIONS_TOML}"
+# role + warehouse are written EXPLICITLY so a stray SNOWFLAKE_ROLE /
+# SNOWFLAKE_WAREHOUSE in the shell (e.g. exported from the loader .env, which
+# sets ARTWORK_LOADER) cannot leak into the transformer connection -- a toml
+# value takes precedence over the env var. Without this, a manual
+# `snow connection test -c <transformer>` inherits ARTWORK_LOADER and fails.
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'role'             "${TRANSFORMER_ROLE}"      "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'warehouse'        "${TRANSFORMER_WAREHOUSE}" "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'            "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'private_key_path' "${PRIVATE_KEY}"           "${CONNECTIONS_TOML}"
 
 cat <<EOF
 
