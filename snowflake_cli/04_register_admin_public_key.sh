@@ -18,10 +18,10 @@
 #   and both will authenticate without interfering with each other.
 #
 # Zero-export resolution order (handled by _lib.sh helpers):
-#   SNOWFLAKE_ACCOUNT     env var -> [connections.admin].account in config.toml
-#   SNOWFLAKE_ADMIN_USER  env var -> [connections.admin].user in config.toml
-#   SNOWFLAKE_WAREHOUSE   env var -> [connections.admin].warehouse in
-#                         config.toml -> default 'ARTWORK_WH'
+#   SNOWFLAKE_ACCOUNT     env var -> [<admin>].account in connections.toml
+#   SNOWFLAKE_ADMIN_USER  env var -> [<admin>].user in connections.toml
+#   SNOWFLAKE_WAREHOUSE   env var -> [<admin>].warehouse in
+#                         connections.toml -> default 'ARTWORK_WH'
 #   SNOWFLAKE_PASSWORD    env var -> interactive `read -rs` prompt
 #
 # The admin password is needed 1-3 times per year (bootstrap + key
@@ -41,10 +41,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-# Preflight: config.toml must exist with a seeded [connections.admin] block so
-# the resolve_* helpers have something to read.
-if [[ ! -f "${SNOW_LIB_CONFIG_TOML}" ]]; then
-    echo "error: config.toml not found: ${SNOW_LIB_CONFIG_TOML}" >&2
+# Preflight: connections.toml must exist with a seeded [<admin>] block so
+# the resolve_* helpers have something to read. (config.toml is no longer the
+# connection store; it only holds default_connection_name + [cli.*].)
+if [[ ! -f "${SNOW_LIB_CONNECTIONS_TOML}" ]]; then
+    echo "error: connections.toml not found: ${SNOW_LIB_CONNECTIONS_TOML}" >&2
     echo "       seed it first with:" >&2
     echo "           ./scripts/snowflake_cli/setup.sh --phase init-profile" >&2
     echo "       (or run --phase prereq / --phase all, which include it), then re-run." >&2

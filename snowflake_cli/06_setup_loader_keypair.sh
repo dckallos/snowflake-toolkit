@@ -15,8 +15,8 @@
 #      the admin bootstrap: the loader has NO chicken-and-egg problem because a
 #      working admin JWT connection already exists, so the loader never needs a
 #      password one-shot at all.
-#   3. Rewrite [connections.loader] in ~/.snowflake/config.toml to use
-#      key-pair auth (authenticator = SNOWFLAKE_JWT, private_key_file = the .p8),
+#   3. Rewrite [loader] in ~/.snowflake/connections.toml to use
+#      key-pair auth (authenticator = SNOWFLAKE_JWT, private_key_path = the .p8),
 #      using the insert-if-missing helper so the lines are created if absent.
 #
 # Prerequisites:
@@ -49,7 +49,7 @@ KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${LOADER_PRIVATE_KEY:-$(loader_key_path p8)}"
 PUBLIC_KEY="${LOADER_PUBLIC_KEY:-$(loader_key_path pub)}"
 SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_loader_public_key.sql}"
-CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"
+CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
 
 [[ -f "${SQL_FILE}" ]] || { echo "error: SQL file not found: ${SQL_FILE}" >&2; exit 66; }
 
@@ -81,24 +81,24 @@ snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     --variable "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 
-# --- 3. Point [connections.<loader>] at key-pair auth ---------------------
+# --- 3. Point [<loader>] in connections.toml at key-pair auth -------------
 # Resolve the account from the admin connection (loader shares the account).
 ACCOUNT="$(resolve_admin_account)"
 
-echo "==> updating [connections.${SNOW_LIB_LOADER_CONN}] in ${CONFIG_TOML} for key-pair auth"
-upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'account'          "${ACCOUNT}"      "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'user'             "${LOADER_USER}"  "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_LOADER_CONN}" 'private_key_file' "${PRIVATE_KEY}"  "${CONFIG_TOML}"
+echo "==> updating [${SNOW_LIB_LOADER_CONN}] in ${CONNECTIONS_TOML} for key-pair auth"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'account'          "${ACCOUNT}"      "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'user'             "${LOADER_USER}"  "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_LOADER_CONN}" 'private_key_path' "${PRIVATE_KEY}"  "${CONNECTIONS_TOML}"
 
 cat <<EOF
 
 ==> loader key-pair auth established.
     User:            ${LOADER_USER} (TYPE = SERVICE, key-pair only)
     Private key:     ${PRIVATE_KEY}
-    config.toml:     [connections.${SNOW_LIB_LOADER_CONN}] now uses authenticator = SNOWFLAKE_JWT
+    connections.toml:[${SNOW_LIB_LOADER_CONN}] now uses authenticator = SNOWFLAKE_JWT
 
-    Any stale 'password' line left in [connections.${SNOW_LIB_LOADER_CONN}] is ignored
+    Any stale 'password' line left in [${SNOW_LIB_LOADER_CONN}] is ignored
     under SNOWFLAKE_JWT, but you may delete it for cleanliness.
 
     For the Python extractor, set in .env (no password at rest):

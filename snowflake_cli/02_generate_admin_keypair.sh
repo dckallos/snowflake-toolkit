@@ -13,7 +13,7 @@
 #
 # Note: SNOWFLAKE_JWT expects an UNENCRYPTED PKCS#8 key. If you generate an
 # encrypted key by dropping -nocrypt, you must also set 'private_key_file_pwd'
-# in [connections.<admin>] (ideally sourced from the macOS keychain).
+# under [<admin>] in connections.toml (ideally sourced from the macOS keychain).
 # ============================================================
 set -euo pipefail
 

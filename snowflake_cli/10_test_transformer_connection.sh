@@ -3,10 +3,10 @@
 # 10_test_transformer_connection.sh -- Verify the 'transformer' connection.
 #
 # By this point 09_setup_transformer_keypair.sh has switched
-# [connections.<transformer>] to key-pair auth (authenticator = SNOWFLAKE_JWT,
-# private_key_file = the transformer .p8), so NO password and NO .env are
-# required for the CLI test -- the private key in config.toml is the sole
-# credential.
+# [transformer] (in connections.toml) to key-pair auth (authenticator =
+# SNOWFLAKE_JWT, private_key_path = the transformer .p8), so NO password and
+# NO .env are required for the CLI test -- the private key in connections.toml
+# is the sole credential.
 #
 # Runs `snow connection test` and a CURRENT_USER / CURRENT_ROLE round-trip to
 # prove JWT auth works end-to-end for the dbt service user.

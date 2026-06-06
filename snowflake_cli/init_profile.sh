@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
 # ============================================================
-# init_profile.sh -- Seed the [connections.<admin>] block in
-# ~/.snowflake/config.toml on a fresh machine.
+# init_profile.sh -- Seed the [<admin>] connection block in
+# ~/.snowflake/connections.toml on a fresh machine.
 #
 # This closes the only manual gap left in the bootstrap chain: scripts 04 and
-# 08 READ [connections.<admin>] (account / user / warehouse) and ABORT if the
+# 08 READ the admin connection (account / user / warehouse) and ABORT if the
 # block is missing, but nothing in the suite ever CREATED it -- the operator
-# had to hand-write config.toml first. This script creates that block from
+# had to hand-write it first. This script creates that block from
 # resolvable inputs so `--phase all` is runnable end-to-end on a clean box.
+#
+# Connection definitions are written to connections.toml (the file the snow CLI,
+# the VS Code extension, and the Python connector all read). config.toml is
+# retained only for default_connection_name and [cli.*] settings.
 #
 # The target connection name is SNOW_LIB_ADMIN_CONN (default 'admin'), set by
 # setup.sh from --profile / --admin-conn. For a second account, run e.g.
 # `setup.sh --profile clientb --phase init-profile`, which seeds
-# [connections.clientb] using the clientb_rsa_key.p8 key path.
+# [clientb] using the clientb_rsa_key.p8 key path.
 #
-# It is LOCAL-ONLY: it touches nothing but ~/.snowflake/config.toml and creates
-# no Snowflake objects. It is invoked both as its own `setup.sh --phase
-# init-profile` and automatically inside `--phase prereq` (after the key pair
-# exists in step 02, before step 03 locks file permissions).
+# It is LOCAL-ONLY: it touches nothing but ~/.snowflake/{connections,config}.toml
+# and creates no Snowflake objects. It is invoked both as its own `setup.sh
+# --phase init-profile` and automatically inside `--phase prereq` (after the key
+# pair exists in step 02, before step 03 locks file permissions).
 #
 # NON-DESTRUCTIVE BY DESIGN:
-#   - If [connections.<admin>] already has a non-empty `account`, the block is
-#     left untouched (reported and skipped). This protects an operator's
+#   - If [<admin>] already has a non-empty `account` in connections.toml, the
+#     block is left untouched (reported and skipped). This protects an operator's
 #     hand-tuned or promoted config from being clobbered.
 #   - default_connection_name is set to the admin connection name ONLY if it is
 #     currently unset; an existing value (any profile) is never overridden.
@@ -53,69 +57,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"
+CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"             # keeps default_connection_name + [cli.*]
+CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"   # connection DEFINITIONS live here
 ADMIN_CONN="${SNOW_LIB_ADMIN_CONN}"
-ADMIN_SECTION="connections.${ADMIN_CONN}"
+ADMIN_SECTION="${ADMIN_CONN}"                     # UN-prefixed bare section in connections.toml
 PRIVATE_KEY="${ADMIN_PRIVATE_KEY_FILE:-$(admin_key_path p8)}"
 INIT_DEFAULT_WAREHOUSE="${INIT_DEFAULT_WAREHOUSE:-COMPUTE_WH}"
 
-# --- Ensure ~/.snowflake exists and config.toml is at least an empty file ---
+# --- Ensure ~/.snowflake exists and BOTH toml files are at least empty files ---
 # (01_init_snowflake_home.sh normally does the mkdir, but this script must be
-# safe to run standalone too.)
+# safe to run standalone too.) config.toml is retained for default_connection_name
+# and [cli.*]; connections.toml is the primary target for connection definitions.
 mkdir -p "$(dirname "${CONFIG_TOML}")"
 if [[ ! -f "${CONFIG_TOML}" ]]; then
     echo "==> creating empty ${CONFIG_TOML} (chmod 600)"
     : > "${CONFIG_TOML}"
     chmod 600 "${CONFIG_TOML}"
 fi
-
-# --- Detect a shadowing connections.toml ---------------------------------
-# Per the Snowflake CLI docs: when ~/.snowflake/connections.toml exists, snow
-# CLI reads connections ONLY from it and IGNORES every [connections.*] block in
-# config.toml. Other Snowflake tools (Cortex Code, the VS Code extension,
-# SnowConvert) create connections.toml, so a profile this script seeds in
-# config.toml can be silently invisible to `snow -c <conn>` -- the failure
-# surfaces downstream as "connection '<conn>' is not configured" even though
-# config.toml is correct. default_connection_name is always read from
-# config.toml, so it is unaffected. Note: connections.toml section names OMIT
-# the 'connections.' prefix, so [connections.${ADMIN_CONN}] here is
-# [${ADMIN_CONN}] there.
-CONNECTIONS_TOML="$(dirname "${CONFIG_TOML}")/connections.toml"
-if [[ -f "${CONNECTIONS_TOML}" ]]; then
-    if [[ -n "$(parse_toml_value "${ADMIN_CONN}" 'account' "${CONNECTIONS_TOML}")" ]]; then
-        cat <<EOF
-==> note: ${CONNECTIONS_TOML} exists and already defines [${ADMIN_CONN}].
-    snow CLI will use THAT definition and IGNORE config.toml's connections.
-    This script still seeds [${ADMIN_SECTION}] in config.toml for reference,
-    but verify the connections.toml copy of [${ADMIN_CONN}] is the correct one.
-EOF
-    else
-        cat >&2 <<EOF
-ERROR: ${CONNECTIONS_TOML} exists but has no [${ADMIN_CONN}] section.
-       snow CLI reads connections ONLY from connections.toml when it is present
-       and IGNORES the [${ADMIN_SECTION}] block this script seeds in
-       ${CONFIG_TOML}. Downstream phases (e.g. --phase admin) will fail with
-       "connection '${ADMIN_CONN}' is not configured".
-       Fix (pick one), then re-run:
-         A) add the connection to ${CONNECTIONS_TOML}, dropping the
-            'connections.' prefix -> [${ADMIN_CONN}]; or
-         B) remove/rename connections.toml so config.toml is used:
-              mv ${CONNECTIONS_TOML} ${CONNECTIONS_TOML}.bak
-EOF
-        exit 1
-    fi
+if [[ ! -f "${CONNECTIONS_TOML}" ]]; then
+    echo "==> creating empty ${CONNECTIONS_TOML} (chmod 600)"
+    : > "${CONNECTIONS_TOML}"
+    chmod 600 "${CONNECTIONS_TOML}"
 fi
 
+# --- connections.toml is the PRIMARY connection store (Snowflake CLI docs) ----
+# When ~/.snowflake/connections.toml exists, the snow CLI reads connections ONLY
+# from it and IGNORES every [connections.*] block in config.toml. The VS Code
+# extension and the Python connector also read connections.toml exclusively.
+# This script therefore seeds the admin connection DIRECTLY into connections.toml
+# as an UN-prefixed bare section ([${ADMIN_CONN}], not [connections.${ADMIN_CONN}]).
+# default_connection_name is always read from config.toml, so it stays there.
+
 # --- Non-destructive guard: bail out if this admin profile already exists ---
-EXISTING_ACCOUNT="$(parse_toml_value "${ADMIN_SECTION}" 'account' "${CONFIG_TOML}")"
+EXISTING_ACCOUNT="$(parse_toml_value "${ADMIN_SECTION}" 'account' "${CONNECTIONS_TOML}")"
 if [[ -n "${EXISTING_ACCOUNT}" ]]; then
     cat <<EOF
-==> [${ADMIN_SECTION}] already configured (account = "${EXISTING_ACCOUNT}").
+==> [${ADMIN_SECTION}] already configured in ${CONNECTIONS_TOML} (account = "${EXISTING_ACCOUNT}").
     Leaving it untouched. To change account/user/warehouse, edit
-    ${CONFIG_TOML} by hand or use the dedicated phases (e.g. --phase promote
+    ${CONNECTIONS_TOML} by hand or use the dedicated phases (e.g. --phase promote
     for the warehouse). This script only SEEDS a missing admin profile.
 EOF
     # Still ensure default_connection_name is set if it is currently absent.
+    # (default_connection_name lives in config.toml, not connections.toml.)
     if [[ -z "$(parse_toml_toplevel_key 'default_connection_name' "${CONFIG_TOML}")" ]]; then
         echo "==> default_connection_name unset; setting it to \"${ADMIN_CONN}\""
         upsert_toml_toplevel_key 'default_connection_name' "${ADMIN_CONN}" "${CONFIG_TOML}"
@@ -160,31 +143,56 @@ if [[ -z "${WAREHOUSE}" ]]; then
 fi
 
 # --- default_connection_name only if currently unset ---------------------
-# Written BEFORE the section block so a freshly-seeded file starts with the
-# top-level key, then the [connections.<admin>] table (no leading blank line).
+# Lives in config.toml (the snow CLI reads it there even when the connection
+# definitions live in connections.toml). Only set when currently absent.
 if [[ -z "$(parse_toml_toplevel_key 'default_connection_name' "${CONFIG_TOML}")" ]]; then
     upsert_toml_toplevel_key 'default_connection_name' "${ADMIN_CONN}" "${CONFIG_TOML}"
 fi
 
-# --- Seed [connections.<admin>] via the upsert helper (creates the block) -
-echo "==> seeding [${ADMIN_SECTION}] in ${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'account'          "${ACCOUNT}"      "${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'user'             "${ADMIN_USER}"   "${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'role'             "${ROLE}"         "${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'warehouse'        "${WAREHOUSE}"    "${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONFIG_TOML}"
-upsert_toml_value_in_section "${ADMIN_SECTION}" 'private_key_file' "${PRIVATE_KEY}"  "${CONFIG_TOML}"
+# --- Seed [<admin>] in connections.toml via the upsert helper (creates block) -
+# Key field is private_key_path (NOT private_key_file): connections.toml is read
+# by the VS Code extension and the Python connector, which expect private_key_path.
+# The snow CLI accepts private_key_path in connections.toml as well.
+echo "==> seeding [${ADMIN_SECTION}] in ${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'account'          "${ACCOUNT}"      "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'user'             "${ADMIN_USER}"   "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'role'             "${ROLE}"         "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'warehouse'        "${WAREHOUSE}"    "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'authenticator'    'SNOWFLAKE_JWT'   "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${ADMIN_SECTION}" 'private_key_path' "${PRIVATE_KEY}"  "${CONNECTIONS_TOML}"
+
+# --- Ensure the key pair exists (connections.toml must never reference a missing file) -
+PUBLIC_KEY="${PRIVATE_KEY%.p8}.pub"
+if [[ ! -f "${PRIVATE_KEY}" ]]; then
+    echo "==> key file not found at ${PRIVATE_KEY}; generating..."
+    mkdir -p "$(dirname "${PRIVATE_KEY}")"
+    openssl genrsa 2048 \
+        | openssl pkcs8 -topk8 -inform PEM -out "${PRIVATE_KEY}" -nocrypt
+    openssl rsa -in "${PRIVATE_KEY}" -pubout -out "${PUBLIC_KEY}"
+    chmod 600 "${PRIVATE_KEY}"
+    chmod 644 "${PUBLIC_KEY}"
+    echo "==> generated ${PRIVATE_KEY} + ${PUBLIC_KEY}"
+fi
+
+PROFILE_FLAG=""
+if [[ "${ADMIN_CONN}" != "admin" ]]; then
+    PROFILE_FLAG=" --profile ${ADMIN_CONN}"
+fi
 
 cat <<EOF
 
-==> [${ADMIN_SECTION}] seeded.
+==> [${ADMIN_SECTION}] seeded in ${CONNECTIONS_TOML}.
     account          = ${ACCOUNT}
     user             = ${ADMIN_USER}
     role             = ${ROLE}
     warehouse        = ${WAREHOUSE}   (account-default; promote to ARTWORK_WH later)
     authenticator    = SNOWFLAKE_JWT
-    private_key_file = ${PRIVATE_KEY}
+    private_key_path = ${PRIVATE_KEY}
+    (default_connection_name lives in ${CONFIG_TOML})
 
 Next: register the public key and verify JWT auth:
-    ./scripts/snowflake_cli/setup.sh --phase admin
+    ./scripts/snowflake_cli/setup.sh${PROFILE_FLAG} --phase admin
+
+Or run the all-in-one activation (registers key + applies IaC + loader + transformer):
+    ./scripts/activate_mac.sh${PROFILE_FLAG}
 EOF

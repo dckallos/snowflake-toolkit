@@ -13,8 +13,8 @@
 #      git-setup/operator/register_transformer_public_key.sql via the ADMIN JWT
 #      connection (`snow sql -c <admin> ...`). No password one-shot is needed --
 #      a working admin JWT connection already exists.
-#   3. Rewrite [connections.<TRANSFORMER_CONN>] in ~/.snowflake/config.toml to use
-#      key-pair auth (authenticator = SNOWFLAKE_JWT, private_key_file = the .p8),
+#   3. Rewrite [<transformer>] in ~/.snowflake/connections.toml to use
+#      key-pair auth (authenticator = SNOWFLAKE_JWT, private_key_path = the .p8),
 #      using the insert-if-missing helper (additive; other sections untouched).
 #
 # Prerequisites:
@@ -46,7 +46,7 @@ KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${TRANSFORMER_PRIVATE_KEY:-$(transformer_key_path p8)}"
 PUBLIC_KEY="${TRANSFORMER_PUBLIC_KEY:-$(transformer_key_path pub)}"
 SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_transformer_public_key.sql}"
-CONFIG_TOML="${SNOW_LIB_CONFIG_TOML}"
+CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
 
 [[ -f "${SQL_FILE}" ]] || { echo "error: SQL file not found: ${SQL_FILE}" >&2; exit 66; }
 
@@ -78,22 +78,22 @@ snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     --variable "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 
-# --- 3. Point [connections.<transformer>] at key-pair auth ----------------
+# --- 3. Point [<transformer>] in connections.toml at key-pair auth --------
 # Resolve the account from the admin connection (the transformer shares it).
 ACCOUNT="$(resolve_admin_account)"
 
-echo "==> updating [connections.${SNOW_LIB_TRANSFORMER_CONN}] in ${CONFIG_TOML} for key-pair auth"
-upsert_toml_value_in_section "connections.${SNOW_LIB_TRANSFORMER_CONN}" 'account'          "${ACCOUNT}"           "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_TRANSFORMER_CONN}" 'user'             "${TRANSFORMER_USER}" "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_TRANSFORMER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'       "${CONFIG_TOML}"
-upsert_toml_value_in_section "connections.${SNOW_LIB_TRANSFORMER_CONN}" 'private_key_file' "${PRIVATE_KEY}"      "${CONFIG_TOML}"
+echo "==> updating [${SNOW_LIB_TRANSFORMER_CONN}] in ${CONNECTIONS_TOML} for key-pair auth"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'account'          "${ACCOUNT}"           "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'user'             "${TRANSFORMER_USER}" "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'authenticator'    'SNOWFLAKE_JWT'       "${CONNECTIONS_TOML}"
+upsert_toml_value_in_section "${SNOW_LIB_TRANSFORMER_CONN}" 'private_key_path' "${PRIVATE_KEY}"      "${CONNECTIONS_TOML}"
 
 cat <<EOF
 
 ==> transformer key-pair auth established.
     User:            ${TRANSFORMER_USER} (TYPE = SERVICE, key-pair only)
     Private key:     ${PRIVATE_KEY}
-    config.toml:     [connections.${SNOW_LIB_TRANSFORMER_CONN}] now uses authenticator = SNOWFLAKE_JWT
+    connections.toml:[${SNOW_LIB_TRANSFORMER_CONN}] now uses authenticator = SNOWFLAKE_JWT
 
     For dbt (artwork_pipeline), set in .env (no password at rest):
         DBT_SNOWFLAKE_USER=${TRANSFORMER_USER}

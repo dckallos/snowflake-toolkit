@@ -3,24 +3,24 @@
 # 08_promote_admin_warehouse.sh -- Promote the admin connection from the
 # initial account-default warehouse to ARTWORK_WH.
 #
-# Solves the chicken-and-egg between [connections.admin].warehouse and the
+# Solves the chicken-and-egg between [<admin>].warehouse and the
 # IaC layer: ARTWORK_WH does not exist until `make iac` applies V002, but
 # the snow CLI's 'admin' connection needs *some* existing warehouse for
 # 'snow connection test -c admin' and SELECT CURRENT_USER() round-trips to
 # succeed during initial setup. The project pins
-# [connections.admin].warehouse to an account-default warehouse on day one
+# [<admin>].warehouse to an account-default warehouse on day one
 # (typically COMPUTE_WH on fresh Snowflake trial accounts), runs the full
 # JWT verification against it via '--phase admin' / '--phase all', then
 # runs 'make iac' to create ARTWORK_WH and finally invokes THIS script via
 # '--phase promote' to:
 #
 #   1. Verify ARTWORK_WH actually exists in Snowflake (SHOW WAREHOUSES).
-#   2. Back up ~/.snowflake/config.toml to a timestamped .bak.
-#   3. Rewrite ONLY the warehouse line under [connections.admin] using
+#   2. Back up ~/.snowflake/connections.toml to a timestamped .bak.
+#   3. Rewrite ONLY the warehouse line under [<admin>] using
 #      _lib.sh's awk-based replace_toml_value_in_section helper. Other
-#      sections ([connections.loader], [cli.logs], etc.) are left
+#      sections ([<loader>], [<transformer>]) are left
 #      untouched.
-#   4. chmod 600 ~/.snowflake/config.toml so the snow CLI continues to
+#   4. chmod 600 ~/.snowflake/connections.toml so the snow CLI continues to
 #      accept it (handled by replace_toml_value_in_section).
 #   5. Reuse _lib.sh's parse_toml_value helper to confirm the new value
 #      parses back as ARTWORK_WH; abort otherwise.
@@ -35,18 +35,18 @@
 #
 # Creates NO Snowflake objects. ARTWORK_WH must already exist (created
 # by infrastructure/V002__create_warehouses.sql via 'make iac'); this
-# script only verifies it, rewrites config.toml in code, and re-verifies
+# script only verifies it, rewrites connections.toml in code, and re-verifies
 # JWT auth end-to-end.
 #
 # Zero-export resolution order (handled by _lib.sh helpers):
-#   SNOWFLAKE_ADMIN_USER  env var -> [connections.admin].user in config.toml
+#   SNOWFLAKE_ADMIN_USER  env var -> [<admin>].user in connections.toml
 #
 # No password required -- JWT auth via the existing admin RSA key pair.
 #
 # Optional env:
 #   ADMIN_PUBLIC_KEY_FILE defaults to ~/.snowflake/keys/admin_rsa_key.pub
 #   SQL_FILE              defaults to git-setup/operator/register_admin_public_key.sql
-#   CONFIG_TOML           defaults to ~/.snowflake/config.toml
+#   CONNECTIONS_TOML      defaults to ~/.snowflake/connections.toml
 #   TARGET_WAREHOUSE      defaults to ARTWORK_WH
 # ============================================================
 set -euo pipefail
@@ -57,12 +57,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-CONFIG_TOML="${CONFIG_TOML:-${HOME}/.snowflake/config.toml}"
+CONNECTIONS_TOML="${CONNECTIONS_TOML:-${SNOW_LIB_CONNECTIONS_TOML}}"
 
-# Check config.toml exists BEFORE resolving values from it, so a missing file
-# yields the actionable init-profile hint rather than a bare resolve error.
-[[ -f "${CONFIG_TOML}" ]] || {
-    echo "error: config.toml not found: ${CONFIG_TOML}" >&2
+# Check connections.toml exists BEFORE resolving values from it, so a missing
+# file yields the actionable init-profile hint rather than a bare resolve error.
+[[ -f "${CONNECTIONS_TOML}" ]] || {
+    echo "error: connections.toml not found: ${CONNECTIONS_TOML}" >&2
     echo "       seed it first with:" >&2
     echo "           ./scripts/snowflake_cli/setup.sh --phase init-profile" >&2
     echo "       (or run --phase prereq / --phase all, which include it), then re-run." >&2
@@ -102,33 +102,33 @@ fi
 echo "    OK: ${TARGET_WAREHOUSE} exists"
 
 # ------------------------------------------------------------
-# Step 2/4: rewrite [connections.admin].warehouse in config.toml via the
+# Step 2/4: rewrite [<admin>].warehouse in connections.toml via the
 # _lib.sh helper, which handles the timestamped backup, the in-section
 # awk rewrite, the atomic mv, and chmod 600. Other sections
-# ([connections.loader], [cli.logs]) are left strictly untouched.
+# ([<loader>], [<transformer>]) are left strictly untouched.
 # ------------------------------------------------------------
 echo
-echo "==> Step 2/4: rewrite [connections.${SNOW_LIB_ADMIN_CONN}].warehouse -> ${TARGET_WAREHOUSE}"
+echo "==> Step 2/4: rewrite [${SNOW_LIB_ADMIN_CONN}].warehouse -> ${TARGET_WAREHOUSE}"
 replace_toml_value_in_section \
-    "connections.${SNOW_LIB_ADMIN_CONN}" \
+    "${SNOW_LIB_ADMIN_CONN}" \
     "warehouse" \
     "${TARGET_WAREHOUSE}" \
-    "${CONFIG_TOML}"
+    "${CONNECTIONS_TOML}"
 
 # ------------------------------------------------------------
 # Step 3/4: parse-back verification using the same parse_toml_value
 # helper that scripts 04/05 use to read connection values. Aborts before
-# wasting a connection test if config.toml did not round-trip cleanly.
+# wasting a connection test if connections.toml did not round-trip cleanly.
 # ------------------------------------------------------------
 echo
 echo "==> Step 3/4: parse-back verification"
-NEW_VALUE="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${CONFIG_TOML}")"
+NEW_VALUE="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${CONNECTIONS_TOML}")"
 if [[ "${NEW_VALUE}" != "${TARGET_WAREHOUSE}" ]]; then
     echo "error: parse-back mismatch: expected '${TARGET_WAREHOUSE}', got '${NEW_VALUE}'" >&2
-    echo "       inspect ${CONFIG_TOML} and the most recent .bak.* backup." >&2
+    echo "       inspect ${CONNECTIONS_TOML} and the most recent .bak.* backup." >&2
     exit 70
 fi
-echo "    OK: [connections.admin].warehouse parses back as '${NEW_VALUE}'"
+echo "    OK: [${SNOW_LIB_ADMIN_CONN}].warehouse parses back as '${NEW_VALUE}'"
 
 # ------------------------------------------------------------
 # Step 4/4: re-run the full three-step JWT verification against the
@@ -144,13 +144,12 @@ cat <<EOF
 ==================================================================
 admin connection promoted to ${TARGET_WAREHOUSE}.
 
-[connections.admin].warehouse in ${CONFIG_TOML} now points at
+[${SNOW_LIB_ADMIN_CONN}].warehouse in ${CONNECTIONS_TOML} now points at
 ${TARGET_WAREHOUSE}; the previous value is preserved in a timestamped
-${CONFIG_TOML}.bak.* file. Full JWT verification just re-ran successfully
+${CONNECTIONS_TOML}.bak.* file. Full JWT verification just re-ran successfully
 against the promoted warehouse.
 
-Next: rotate the loader password and verify the loader connection:
-    export LOADER_NEW_PASSWORD='<strong_random_value>'
+Next: set up the loader service-user key pair and verify the loader connection:
     ./scripts/snowflake_cli/setup.sh --phase loader
 ==================================================================
 EOF

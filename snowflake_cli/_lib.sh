@@ -34,6 +34,14 @@
 
 SNOW_LIB_CONFIG_TOML="${SNOW_LIB_CONFIG_TOML:-${HOME}/.snowflake/config.toml}"
 
+# Connection DEFINITIONS live here (not in config.toml). When this file exists,
+# the snow CLI reads connections ONLY from it and ignores config.toml's
+# [connections.*] blocks; the VS Code extension and the Python connector read
+# ONLY this file. config.toml is retained for non-connection settings:
+# default_connection_name (top-level) and [cli.*]. Sections here are UN-prefixed
+# bare connection names ([mk07348], NOT [connections.mk07348]).
+SNOW_LIB_CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML:-${HOME}/.snowflake/connections.toml}"
+
 # Default warehouse used when neither an env var nor config.toml provides one.
 SNOW_LIB_DEFAULT_WAREHOUSE="${SNOW_LIB_DEFAULT_WAREHOUSE:-ARTWORK_WH}"
 
@@ -289,16 +297,20 @@ upsert_toml_toplevel_key() {
     prune_backups "${file}"
 }
 
-# list_connections [file]
+# list_connections [connections_file] [config_file]
 #
-# Print every [connections.NAME] defined in config.toml, marking the one named
-# by default_connection_name. Read-only. Falls back gracefully on an empty or
-# missing file. (Intentionally parses the file rather than shelling out to
-# `snow connection list`, so it works offline and is deterministic in tests.)
+# Print every connection defined in connections.toml, marking the one named by
+# default_connection_name (which still lives in config.toml). Read-only. Falls
+# back gracefully on an empty or missing file. Connection sections in
+# connections.toml are UN-prefixed bare names ([mk07348]), unlike config.toml's
+# historical [connections.mk07348]. (Intentionally parses the files rather than
+# shelling out to `snow connection list`, so it works offline and is
+# deterministic in tests.)
 list_connections() {
-    local file="${1:-${SNOW_LIB_CONFIG_TOML}}"
+    local file="${1:-${SNOW_LIB_CONNECTIONS_TOML}}"
+    local config_file="${2:-${SNOW_LIB_CONFIG_TOML}}"
     local default
-    default="$(parse_toml_toplevel_key 'default_connection_name' "${file}")"
+    default="$(parse_toml_toplevel_key 'default_connection_name' "${config_file}")"
 
     echo "Connections in ${file}:"
     if [[ ! -f "${file}" ]]; then
@@ -316,8 +328,8 @@ list_connections() {
         fi
     done < <(awk '
         { l = $0; sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l) }
-        l ~ /^\[connections\..+\]$/ {
-            sub(/^\[connections\./, "", l); sub(/\]$/, "", l); print l
+        l ~ /^\[[A-Za-z0-9_-]+\]$/ {
+            sub(/^\[/, "", l); sub(/\]$/, "", l); print l
         }
     ' "${file}")
 
@@ -326,20 +338,23 @@ list_connections() {
     fi
 }
 
-# set_default_connection <name> [file]
+# set_default_connection <name> [config_file] [connections_file]
 #
 # Point default_connection_name at <name>. Validates the name, warns (but does
-# not fail) if no [connections.<name>] block exists yet, then upserts the
+# not fail) if no [<name>] block exists yet in connections.toml, then upserts the
 # top-level key via the durable helper (timestamped backup, chmod 600).
+# default_connection_name STAYS in config.toml (snow CLI reads it from there even
+# when connection definitions live in connections.toml).
 set_default_connection() {
     local name="$1"
     local file="${2:-${SNOW_LIB_CONFIG_TOML}}"
+    local connections_file="${3:-${SNOW_LIB_CONNECTIONS_TOML}}"
 
     validate_conn_name "${name}" || return $?
     [[ -f "${file}" ]] || { echo "error: config.toml not found: ${file}" >&2; return 66; }
 
-    if [[ -z "$(parse_toml_value "connections.${name}" 'account' "${file}")" ]]; then
-        echo "WARN: [connections.${name}] has no 'account' yet in ${file};" >&2
+    if [[ -z "$(parse_toml_value "${name}" 'account' "${connections_file}")" ]]; then
+        echo "WARN: [${name}] has no 'account' yet in ${connections_file};" >&2
         echo "      setting it as default anyway -- seed it with --phase init-profile." >&2
     fi
 
@@ -351,19 +366,19 @@ set_default_connection() {
 #
 # Resolution order:
 #   1. $SNOWFLAKE_ACCOUNT
-#   2. [connections.admin].account from ~/.snowflake/config.toml
+#   2. [<admin>].account from ~/.snowflake/connections.toml
 #   3. error (no interactive prompt -- account is not a secret but must be
 #      configured before running these scripts)
 resolve_admin_account() {
     local value="${SNOWFLAKE_ACCOUNT:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'account' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'account' "${SNOW_LIB_CONNECTIONS_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         echo "error: cannot resolve SNOWFLAKE_ACCOUNT" >&2
         echo "       set SNOWFLAKE_ACCOUNT in the environment OR add" >&2
-        echo "       account = \"...\" under [connections.${SNOW_LIB_ADMIN_CONN}] in" >&2
-        echo "       ${SNOW_LIB_CONFIG_TOML}" >&2
+        echo "       account = \"...\" under [${SNOW_LIB_ADMIN_CONN}] in" >&2
+        echo "       ${SNOW_LIB_CONNECTIONS_TOML}" >&2
         return 78
     fi
     printf '%s' "${value}"
@@ -373,18 +388,18 @@ resolve_admin_account() {
 #
 # Resolution order:
 #   1. $SNOWFLAKE_ADMIN_USER
-#   2. [connections.admin].user from ~/.snowflake/config.toml
+#   2. [<admin>].user from ~/.snowflake/connections.toml
 #   3. error
 resolve_admin_user() {
     local value="${SNOWFLAKE_ADMIN_USER:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'user' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'user' "${SNOW_LIB_CONNECTIONS_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         echo "error: cannot resolve SNOWFLAKE_ADMIN_USER" >&2
         echo "       set SNOWFLAKE_ADMIN_USER in the environment OR add" >&2
-        echo "       user = \"...\" under [connections.${SNOW_LIB_ADMIN_CONN}] in" >&2
-        echo "       ${SNOW_LIB_CONFIG_TOML}" >&2
+        echo "       user = \"...\" under [${SNOW_LIB_ADMIN_CONN}] in" >&2
+        echo "       ${SNOW_LIB_CONNECTIONS_TOML}" >&2
         return 78
     fi
     printf '%s' "${value}"
@@ -394,12 +409,12 @@ resolve_admin_user() {
 #
 # Resolution order:
 #   1. $SNOWFLAKE_WAREHOUSE
-#   2. [connections.admin].warehouse from ~/.snowflake/config.toml
+#   2. [<admin>].warehouse from ~/.snowflake/connections.toml
 #   3. fall back to $SNOW_LIB_DEFAULT_WAREHOUSE (ARTWORK_WH)
 resolve_admin_warehouse() {
     local value="${SNOWFLAKE_WAREHOUSE:-}"
     if [[ -z "${value}" ]]; then
-        value="$(parse_toml_value "connections.${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${SNOW_LIB_CONFIG_TOML}")"
+        value="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${SNOW_LIB_CONNECTIONS_TOML}")"
     fi
     if [[ -z "${value}" ]]; then
         value="${SNOW_LIB_DEFAULT_WAREHOUSE}"
@@ -661,5 +676,73 @@ upsert_toml_value_in_section() {
     mv "${tmp}" "${file}"
     chmod 600 "${file}"
     echo "==> upserted [${section}].${key} = \"${new_value}\" in ${file} (chmod 600)"
+    prune_backups "${file}"
+}
+
+# remove_toml_section <section> <file>
+#
+# Delete the entire [<section>] block (its header plus every line up to, but not
+# including, the next [section] header or EOF) from a TOML file. Used by the
+# config.toml -> connections.toml cutover (Phase 6) to strip the now-dead
+# [connections.*] blocks from config.toml AFTER the connections.toml equivalents
+# are verified working. Leaves all other sections (and top-level keys such as
+# default_connection_name) byte-for-byte untouched.
+#
+# Same durability contract as the upsert/replace helpers: timestamped backup,
+# atomic temp-file swap, chmod 600, backup pruning. A no-op (exit 0) when the
+# section is absent, so it is safe to call for each connection unconditionally.
+remove_toml_section() {
+    local section="$1"
+    local file="$2"
+
+    [[ -f "${file}" ]] || { echo "error: TOML file not found: ${file}" >&2; return 66; }
+
+    warn_duplicate_section "${section}" "${file}"
+
+    local timestamp backup tmp dir
+    timestamp="$(date -u +%Y%m%d%H%M%S)"
+    backup="${file}.bak.${timestamp}"
+    dir="$(dirname "${file}")"
+    tmp="$(mktemp "${dir}/.$(basename "${file}").XXXXXX")"
+
+    cp -p "${file}" "${backup}"
+    echo "==> backed up ${file} -> ${backup}"
+
+    awk -v section="[${section}]" '
+        BEGIN { in_section = 0; removed = 0 }
+        {
+            line = $0
+            trimmed = line
+            sub(/^[[:space:]]+/, "", trimmed)
+            sub(/[[:space:]]+$/, "", trimmed)
+
+            if (trimmed ~ /^\[.*\]$/) {
+                if (trimmed == section) { in_section = 1; removed = 1; next }
+                in_section = 0
+                print line
+                next
+            }
+
+            if (in_section) { next }
+            print line
+        }
+        END { if (!removed) exit 3 }
+    ' "${file}" > "${tmp}"
+    local awk_rc=$?
+
+    if [[ ${awk_rc} -eq 3 ]]; then
+        rm -f "${tmp}" "${backup}"
+        echo "==> section [${section}] not present in ${file}; nothing to remove"
+        return 0
+    fi
+    if [[ ${awk_rc} -ne 0 ]]; then
+        rm -f "${tmp}"
+        echo "error: failed to remove section [${section}] from ${file}" >&2
+        return 1
+    fi
+
+    mv "${tmp}" "${file}"
+    chmod 600 "${file}"
+    echo "==> removed section [${section}] from ${file} (chmod 600)"
     prune_backups "${file}"
 }
