@@ -1,11 +1,12 @@
 #!/bin/bash
-# ❄️ load_profile.sh - Loads exact dbt/Snowflake vars from .env 🎨
+# ❄️ load_profile.sh - Loads exact dbt/Snowflake vars from a specified env file 🎨
 
-ENV_FILE=".env"
+# 0️⃣ Use the first argument as the env file, or default to ".env"
+ENV_FILE="${1:-.env}"
 
-# 1️⃣ Check if the .env file exists
+# 1️⃣ Check if the file exists
 if [ ! -f "$ENV_FILE" ]; then
-  echo "❌ Oops! No $ENV_FILE file found in the current directory. 🕵️‍♂️"
+  echo "❌ Oops! No '$ENV_FILE' file found. 🕵️‍♂️"
   return 1 2>/dev/null || exit 1
 fi
 
@@ -24,7 +25,7 @@ TARGET_VARS=(
   "DBT_SNOWFLAKE_ROLE"
 )
 
-# 3️⃣ Loop through the target variables and pull them from .env
+# 3️⃣ Loop through the target variables and pull them from the target file
 for var in "${TARGET_VARS[@]}"; do
   
   # Search for the exact variable at the start of a line
@@ -41,12 +42,10 @@ for var in "${TARGET_VARS[@]}"; do
     export "$var"="$value"
     echo "✅ Exported: $var"
   else
-    # Let you know if a variable from your list is missing from the .env
+    # Let you know if a variable from your list is missing from the file
     echo "⚠️  Warning: $var was not found in $ENV_FILE! 🤷‍♂️"
   fi
 
 done
 
 echo "🚀 All set! Your specific variables are locked and loaded. 🎸"
-
-
