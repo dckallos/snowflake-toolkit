@@ -118,8 +118,14 @@ Admin connection [${PROFILE}] is live and verified (JWT auth).
 
 Next steps (paste these in order):
 
-  1. Deploy infrastructure to this account:
-     make iac CONN=${PROFILE}
+  1a. Deploy infrastructure ONLY (no git mirror, no PAT needed):
+      make infra CONN=${PROFILE}
+
+  1b. OR deploy infra + git mirror (requires a GitHub PAT):
+      make iac CONN=${PROFILE} VARS="github_pat=ghp_..."
+
+      (git mirror can also be added later standalone:
+      make bootstrap CONN=${PROFILE} VARS="github_pat=ghp_...")
 
   2. Promote admin connection to ARTWORK_WH:
      ./scripts/snowflake_cli/setup.sh --profile ${PROFILE} --phase promote
