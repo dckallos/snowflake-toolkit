@@ -1,28 +1,41 @@
-# Every .sh in the bootstrap.py call graph that must be mode 0755.
-# Read by scripts/bootstrap_chmod.sh (chmod policy) and
-# scripts/git_mark_executable.sh (stages +x into git's index).
+# Every .sh in the toolkit that must be mode 0755.
+# Read by bootstrap_chmod.sh (chmod policy) and
+# git_mark_executable.sh (stages +x into git's index).
 # One path per line, relative to repo root. Blank lines and #-comments
 # are ignored. This data file is NOT itself executable.
 # Keep alphabetized within each subtree for easy diffing.
-scripts/activate_mac.sh
-scripts/apply_sql.sh
-scripts/bootstrap_chmod.sh
-scripts/check.sh
-scripts/checkpoint.sh
-scripts/dbt_orchestrate.sh
-scripts/git_mark_executable.sh
-scripts/orchestrate.sh
-scripts/rollback_sql.sh
-scripts/snowflake_cli/_lib.sh
-scripts/snowflake_cli/00_install_snowflake_cli.sh
-scripts/snowflake_cli/01_init_snowflake_home.sh
-scripts/snowflake_cli/02_generate_admin_keypair.sh
-scripts/snowflake_cli/03_lock_config_permissions.sh
-scripts/snowflake_cli/04_register_admin_public_key.sh
-scripts/snowflake_cli/05_verify_admin_jwt.sh
-scripts/snowflake_cli/06_setup_loader_keypair.sh
-scripts/snowflake_cli/07_test_loader_connection.sh
-scripts/snowflake_cli/08_promote_admin_warehouse.sh
-scripts/snowflake_cli/09_setup_transformer_keypair.sh
-scripts/snowflake_cli/10_test_transformer_connection.sh
-scripts/snowflake_cli/setup.sh
+activate_mac.sh
+apply_sql.sh
+bootstrap_chmod.sh
+check.sh
+checkpoint.sh
+git_mark_executable.sh
+lib/connection_resolver.sh
+lib/dbt_orchestrator.sh
+lib/ddl_orchestrator.sh
+lib/framework_integration_test.sh
+lib/legacy_comparison_test.sh
+load_profile.sh
+orchestrate_modern.sh
+rollback_sql.sh
+snowflake_cli/_lib.sh
+snowflake_cli/00_install_snowflake_cli.sh
+snowflake_cli/01_init_snowflake_home.sh
+snowflake_cli/02_generate_admin_keypair.sh
+snowflake_cli/03_lock_config_permissions.sh
+snowflake_cli/04_register_admin_public_key.sh
+snowflake_cli/05_verify_admin_jwt.sh
+snowflake_cli/06_setup_loader_keypair.sh
+snowflake_cli/07_test_loader_connection.sh
+snowflake_cli/08_promote_admin_warehouse.sh
+snowflake_cli/09_setup_transformer_keypair.sh
+snowflake_cli/10_test_transformer_connection.sh
+snowflake_cli/init_profile.sh
+snowflake_cli/new_account.sh
+snowflake_cli/setup.sh
+status_profile.sh
+tests/examples/basic_project_integration.sh
+tests/framework/unit/test_connection_resolver.sh
+tests/framework/unit/test_orchestrate_modern.sh
+tests/integration/test_multi_account_deployment.sh
+unload_profile.sh

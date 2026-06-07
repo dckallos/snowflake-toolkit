@@ -52,7 +52,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
@@ -70,7 +70,7 @@ CONNECTIONS_TOML="${CONNECTIONS_TOML:-${SNOW_LIB_CONNECTIONS_TOML}}"
 }
 
 ADMIN_USER="$(resolve_admin_user)"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
+SQL_FILE="${SQL_FILE:-${SCRIPT_DIR}/sql/register_admin_public_key.sql}"
 TARGET_WAREHOUSE="${TARGET_WAREHOUSE:-ARTWORK_WH}"
 
 # ------------------------------------------------------------

@@ -36,7 +36,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
@@ -57,7 +57,7 @@ ADMIN_USER="$(resolve_admin_user)"
 WAREHOUSE="$(resolve_admin_warehouse)"
 
 PUBLIC_KEY_FILE="${ADMIN_PUBLIC_KEY_FILE:-$(admin_key_path pub)}"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
+SQL_FILE="${SQL_FILE:-${SCRIPT_DIR}/sql/register_admin_public_key.sql}"
 
 [[ -f "${PUBLIC_KEY_FILE}" ]] || { echo "error: public key not found: ${PUBLIC_KEY_FILE}" >&2; exit 66; }
 [[ -f "${SQL_FILE}" ]]        || { echo "error: SQL file not found: ${SQL_FILE}"   >&2; exit 66; }

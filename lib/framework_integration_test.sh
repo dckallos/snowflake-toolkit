@@ -33,9 +33,9 @@ readonly INTEGRATION_TEST_CREATED="2026-06-02"
 
 # Test configuration
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-readonly TEST_DDL_DIR="${REPO_ROOT}/infrastructure"
-readonly TEST_MANIFEST="${REPO_ROOT}/scripts/manifest.txt"
+readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+readonly TEST_DDL_DIR="${FRAMEWORK_TEST_DDL_DIR:-${REPO_ROOT}/infrastructure}"
+readonly TEST_MANIFEST="${FRAMEWORK_TEST_MANIFEST:-${REPO_ROOT}/manifest.txt}"
 readonly TEST_LOG_DIR="/tmp/framework_integration_test_$$"
 
 # Test state tracking

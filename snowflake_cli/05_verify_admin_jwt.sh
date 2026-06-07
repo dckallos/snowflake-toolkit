@@ -38,13 +38,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
 ADMIN_USER="$(resolve_admin_user)"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_admin_public_key.sql}"
+SQL_FILE="${SQL_FILE:-${SCRIPT_DIR}/sql/register_admin_public_key.sql}"
 
 verify_admin_jwt_full "${ADMIN_USER}" "${SQL_FILE}"
 

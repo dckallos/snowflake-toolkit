@@ -39,8 +39,8 @@ from typing import Dict
 
 from dotenv import dotenv_values
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-INFRA_DIR = REPO_ROOT / "infrastructure"
+REPO_ROOT = Path(__file__).resolve().parent
+INFRA_DIR = Path(os.environ.get("TOOLKIT_INFRA_DIR", str(REPO_ROOT / "infrastructure")))
 # Authoritative account-grant source for the static privilege cross-check.
 # verify_privilege_contract parses the active "GRANT ... ON ACCOUNT TO ROLE
 # ARTWORK_ADMIN" statements here and asserts they match
@@ -50,7 +50,7 @@ ROLES_SQL = INFRA_DIR / "create_roles.sql"
 # version-controlled .sql file (never an inline Python string) so Python
 # stays a pure executor. assert_admin_account_privileges runs it via
 # `snow sql --filename ... --format json` and parses the ACCOUNT-scoped rows.
-PREFLIGHT_GRANTS_SQL = REPO_ROOT / "scripts" / "sql" / "show_admin_account_grants.sql"
+PREFLIGHT_GRANTS_SQL = REPO_ROOT / "sql" / "show_admin_account_grants.sql"
 
 DEFAULT_CONNECTION = "admin"
 DEFAULT_ROLE_NAME = "ARTWORK_ADMIN"

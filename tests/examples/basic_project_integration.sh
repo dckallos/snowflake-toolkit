@@ -394,7 +394,7 @@ integrate_framework() {
     local framework_source_dir
     framework_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
     
-    if [[ ! -f "$framework_source_dir/scripts/orchestrate_modern.sh" ]]; then
+    if [[ ! -f "$framework_source_dir/orchestrate_modern.sh" ]]; then
         echo "❌ Framework components not found at: $framework_source_dir"
         echo "   Please adjust the framework_source_dir variable or install framework"
         exit 1
@@ -406,8 +406,8 @@ integrate_framework() {
     mkdir -p scripts/lib
     
     # Copy framework components
-    cp "$framework_source_dir/scripts/orchestrate_modern.sh" scripts/
-    cp "$framework_source_dir/scripts/lib/connection_resolver.sh" scripts/lib/
+    cp "$framework_source_dir/orchestrate_modern.sh" scripts/
+    cp "$framework_source_dir/lib/connection_resolver.sh" scripts/lib/
     
     # Make executable
     chmod +x scripts/orchestrate_modern.sh
