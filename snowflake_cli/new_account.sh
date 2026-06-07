@@ -68,11 +68,34 @@ echo "==> Connection names: admin='${PROFILE}' loader='${PROFILE}_loader' transf
 echo "==> Key files: ~/.snowflake/keys/${PROFILE}_rsa_key.p8 (+ loader/transformer variants)"
 echo
 
+# Strip ALL Snowflake env vars that the snow CLI treats as connection-level
+# overrides. Without this, a stale SNOWFLAKE_ROLE (etc.) from a prior session
+# bleeds into the fresh admin connection and causes "role does not exist" errors
+# on the new account (where project roles haven't been created yet).
+# This is safe: we're in a child process, so the parent shell is unaffected.
 unset SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER SNOWFLAKE_PASSWORD \
+      SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE SNOWFLAKE_SCHEMA \
+      SNOWFLAKE_USER SNOWFLAKE_AUTHENTICATOR SNOWFLAKE_PRIVATE_KEY_PATH \
       SNOW_LIB_KEY_DIR SNOW_LIB_CONNECTIONS_TOML SNOW_LIB_CONFIG_TOML \
       SNOW_LIB_DEFAULT_WAREHOUSE 2>/dev/null || true
 
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_lib.sh"
+
 "${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase prereq
+
+# Guarantee the admin role is ACCOUNTADMIN regardless of what init_profile.sh
+# inherited from a prior (possibly poisoned) SNOWFLAKE_ROLE env var. The
+# non-destructive guard in init_profile.sh correctly preserves account/user/key
+# on re-runs, but role MUST be ACCOUNTADMIN for the admin bootstrap to succeed
+# on a fresh account where project roles don't exist yet.
+CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
+CURRENT_ROLE="$(parse_toml_value "${PROFILE}" 'role' "${CONNECTIONS_TOML}")"
+if [[ "${CURRENT_ROLE}" != "ACCOUNTADMIN" ]]; then
+    echo "==> [${PROFILE}].role is '${CURRENT_ROLE}'; correcting to ACCOUNTADMIN"
+    upsert_toml_value_in_section "${PROFILE}" 'role' 'ACCOUNTADMIN' "${CONNECTIONS_TOML}"
+fi
+
 "${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase admin
 
 cat <<EOF
