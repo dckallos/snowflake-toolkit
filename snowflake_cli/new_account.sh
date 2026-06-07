@@ -84,16 +84,26 @@ source "${SCRIPT_DIR}/_lib.sh"
 
 "${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase prereq
 
-# Guarantee the admin role is ACCOUNTADMIN regardless of what init_profile.sh
-# inherited from a prior (possibly poisoned) SNOWFLAKE_ROLE env var. The
-# non-destructive guard in init_profile.sh correctly preserves account/user/key
-# on re-runs, but role MUST be ACCOUNTADMIN for the admin bootstrap to succeed
-# on a fresh account where project roles don't exist yet.
+# Guarantee the admin connection block has safe defaults for a fresh account
+# where project objects (ARTWORK_WH, ARTWORK_LOADER role, etc.) don't exist yet.
+# init_profile.sh's non-destructive guard correctly preserves account/user/key
+# on re-runs, but role and warehouse can be poisoned by a prior SNOWFLAKE_ROLE /
+# SNOWFLAKE_WAREHOUSE leak or by _lib.sh's ARTWORK_WH default.
 CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
+
+# Role must be ACCOUNTADMIN (the only role guaranteed to exist pre-IaC).
 CURRENT_ROLE="$(parse_toml_value "${PROFILE}" 'role' "${CONNECTIONS_TOML}")"
 if [[ "${CURRENT_ROLE}" != "ACCOUNTADMIN" ]]; then
     echo "==> [${PROFILE}].role is '${CURRENT_ROLE}'; correcting to ACCOUNTADMIN"
     upsert_toml_value_in_section "${PROFILE}" 'role' 'ACCOUNTADMIN' "${CONNECTIONS_TOML}"
+fi
+
+# Warehouse must be COMPUTE_WH (the account-default that exists on day one).
+# ARTWORK_WH is created later by `make iac`; using it here fails connection test.
+CURRENT_WH="$(parse_toml_value "${PROFILE}" 'warehouse' "${CONNECTIONS_TOML}")"
+if [[ "${CURRENT_WH}" != "COMPUTE_WH" ]]; then
+    echo "==> [${PROFILE}].warehouse is '${CURRENT_WH}'; correcting to COMPUTE_WH"
+    upsert_toml_value_in_section "${PROFILE}" 'warehouse' 'COMPUTE_WH' "${CONNECTIONS_TOML}"
 fi
 
 "${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase admin
