@@ -41,13 +41,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-TRANSFORMER_USER="${TRANSFORMER_USER:-ARTWORK_TRANSFORMER_SVC}"
-TRANSFORMER_ROLE="${TRANSFORMER_ROLE:-ARTWORK_TRANSFORMER}"
+TRANSFORMER_USER="${TRANSFORMER_USER:?ERROR: TRANSFORMER_USER must be set (e.g. ARTWORK_TRANSFORMER_SVC)}"
+TRANSFORMER_ROLE="${TRANSFORMER_ROLE:?ERROR: TRANSFORMER_ROLE must be set (e.g. ARTWORK_TRANSFORMER)}"
 TRANSFORMER_WAREHOUSE="${TRANSFORMER_WAREHOUSE:-${SNOW_LIB_DEFAULT_WAREHOUSE}}"
 KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${TRANSFORMER_PRIVATE_KEY:-$(transformer_key_path p8)}"
 PUBLIC_KEY="${TRANSFORMER_PUBLIC_KEY:-$(transformer_key_path pub)}"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_transformer_public_key.sql}"
+SQL_FILE="${SQL_FILE:-${SCRIPT_DIR}/sql/register_service_user_key.sql}"
 CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
 
 [[ -f "${SQL_FILE}" ]] || { echo "error: SQL file not found: ${SQL_FILE}" >&2; exit 66; }
@@ -76,7 +76,7 @@ PUBKEY="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${PUBLIC_KEY}")"
 echo "==> registering transformer public key for user '${TRANSFORMER_USER}' via -c ${SNOW_LIB_ADMIN_CONN}"
 snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     --filename "${SQL_FILE}" \
-    --variable "transformer_user=${TRANSFORMER_USER}" \
+    --variable "service_user=${TRANSFORMER_USER}" \
     --variable "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 

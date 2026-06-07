@@ -4,7 +4,7 @@
 #
 # Registers all RSA keys (admin + service users) and applies IaC from
 # this machine. After running, this Mac owns all key slots and can
-# execute the full pipeline (make infra, extraction, dbt).
+# execute the full project workflow (make iac, service-user scripts, etc.).
 #
 # Usage:
 #   ./scripts/activate_mac.sh [--profile PROFILE]
@@ -108,7 +108,7 @@ echo ""
 if [[ "${FAILED}" -eq 0 ]]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🎉 This Mac is now the active control plane."
-    echo "   All connections verified. You can run make infra, dbt, extraction, etc."
+    echo "   All connections verified. You can run make iac and project workflows."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 else
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

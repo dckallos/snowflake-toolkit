@@ -53,6 +53,7 @@ ROLES_SQL = INFRA_DIR / "create_roles.sql"
 PREFLIGHT_GRANTS_SQL = REPO_ROOT / "scripts" / "sql" / "show_admin_account_grants.sql"
 
 DEFAULT_CONNECTION = "admin"
+DEFAULT_ROLE_NAME = "ARTWORK_ADMIN"
 
 # Single source of truth for the global (account-level) privileges that
 # ARTWORK_ADMIN must hold. Keep this in lockstep with the
@@ -91,9 +92,9 @@ def load_env() -> Dict[str, str]:
     return {k: v for k, v in dotenv_values(REPO_ROOT / ".env").items() if v is not None}
 
 
-def _show_grants_account_privileges(env: Dict[str, str], conn: str) -> frozenset:
+def _show_grants_account_privileges(env: Dict[str, str], conn: str, role_name: str) -> frozenset:
     """
-    Return the set of ACCOUNT-level privileges currently held by ARTWORK_ADMIN.
+    Return the set of ACCOUNT-level privileges currently held by the given role.
 
     Invokes the snow CLI on the version-controlled query file
     scripts/sql/show_admin_account_grants.sql (run as
@@ -123,9 +124,9 @@ def _show_grants_account_privileges(env: Dict[str, str], conn: str) -> frozenset
     )
     if result.returncode != 0:
         raise SystemExit(
-            "Privilege preflight could not query grants for ARTWORK_ADMIN "
+            "Privilege preflight could not query grants for %s "
             "(snow sql exit %d on connection %r):\n%s"
-            % (result.returncode, conn, (result.stderr or "").strip())
+            % (role_name, result.returncode, conn, (result.stderr or "").strip())
         )
     try:
         rows = json.loads(result.stdout or "[]")
@@ -142,43 +143,44 @@ def _show_grants_account_privileges(env: Dict[str, str], conn: str) -> frozenset
     return frozenset(held)
 
 
-def assert_admin_account_privileges(env: Dict[str, str], conn: str) -> None:
+def assert_admin_account_privileges(env: Dict[str, str], conn: str, role_name: str) -> None:
     """
-    Fail fast if ARTWORK_ADMIN is missing any required account-level
+    Fail fast if the admin role is missing any required account-level
     privilege, BEFORE any object DDL runs.
 
-    Runs SHOW GRANTS TO ROLE ARTWORK_ADMIN, keeps rows whose granted_on is
+    Runs SHOW GRANTS TO ROLE <role_name>, keeps rows whose granted_on is
     ACCOUNT, and compares the held privilege set against
     REQUIRED_ADMIN_ACCOUNT_PRIVILEGES. On any gap it raises with the exact
     remediation GRANT statements, so a missing privilege is reported once,
     immediately, instead of surfacing as a cryptic 003001 (42501) several
     scripts later.
     """
-    held = _show_grants_account_privileges(env, conn)
+    held = _show_grants_account_privileges(env, conn, role_name)
     missing = REQUIRED_ADMIN_ACCOUNT_PRIVILEGES - held
     if missing:
         fixes = "\n".join(
-            "  GRANT %s ON ACCOUNT TO ROLE ARTWORK_ADMIN;" % priv
+            "  GRANT %s ON ACCOUNT TO ROLE %s;" % (priv, role_name)
             for priv in sorted(missing)
         )
         raise SystemExit(
-            "ARTWORK_ADMIN is missing required account-level privileges: %s"
+            "%s is missing required account-level privileges: %s"
             "\nRun as ACCOUNTADMIN (or fix "
             "infrastructure/create_roles.sql):\n%s"
-            % (", ".join(sorted(missing)), fixes)
+            % (role_name, ", ".join(sorted(missing)), fixes)
         )
     logger.info(
-        "Privilege preflight OK: ARTWORK_ADMIN holds %s",
+        "Privilege preflight OK: %s holds %s",
+        role_name,
         ", ".join(sorted(REQUIRED_ADMIN_ACCOUNT_PRIVILEGES)),
     )
 
 
-def _grants_declared_in_roles_sql() -> frozenset:
+def _grants_declared_in_roles_sql(role_name: str) -> frozenset:
     """
-    Return the account-level privileges granted to ARTWORK_ADMIN in create_roles.sql.
+    Return the account-level privileges granted to the given role in create_roles.sql.
 
     Parses infrastructure/create_roles.sql for active (non-commented)
-    "GRANT <privilege> ON ACCOUNT TO ROLE ARTWORK_ADMIN" statements and
+    "GRANT <privilege> ON ACCOUNT TO ROLE <role_name>" statements and
     returns the uppercased privilege set. SQL line-comments (-- ...) are
     stripped first, so the commented EXECUTE TASK grant is ignored until
     create_roles.sql actually enables it. This only READS existing SQL; it authors none.
@@ -191,7 +193,7 @@ def _grants_declared_in_roles_sql() -> frozenset:
         )
     privileges = set()
     pattern = re.compile(
-        r"GRANT\s+(.+?)\s+ON\s+ACCOUNT\s+TO\s+ROLE\s+ARTWORK_ADMIN",
+        r"GRANT\s+(.+?)\s+ON\s+ACCOUNT\s+TO\s+ROLE\s+" + re.escape(role_name),
         re.IGNORECASE,
     )
     for line in raw.splitlines():
@@ -202,7 +204,7 @@ def _grants_declared_in_roles_sql() -> frozenset:
     return frozenset(privileges)
 
 
-def verify_privilege_contract() -> None:
+def verify_privilege_contract(role_name: str) -> None:
     """
     Fail fast if REQUIRED_ADMIN_ACCOUNT_PRIVILEGES and the account grants in
     create_roles.sql have drifted apart.
@@ -214,7 +216,7 @@ def verify_privilege_contract() -> None:
     grant added in one place but not the other is caught before any DDL runs
     -- not several scripts deep as a cryptic 003001 (42501).
     """
-    declared = _grants_declared_in_roles_sql()
+    declared = _grants_declared_in_roles_sql(role_name)
     expected = REQUIRED_ADMIN_ACCOUNT_PRIVILEGES
     if declared != expected:
         only_py = ", ".join(sorted(expected - declared)) or "(none)"
@@ -247,14 +249,18 @@ def parse_args(argv=None) -> argparse.Namespace:
         "verify-contract",
         help="Static account-privilege contract check vs create_roles.sql.",
     )
+    contract.add_argument("--role-name", default=DEFAULT_ROLE_NAME,
+                         help='Admin role name (default: "%s").' % DEFAULT_ROLE_NAME)
     contract.add_argument("-v", "--verbose", action="store_true")
 
     account = sub.add_parser(
         "assert-account-privileges",
-        help="Runtime SHOW GRANTS preflight for ARTWORK_ADMIN.",
+        help="Runtime SHOW GRANTS preflight for the admin role.",
     )
     account.add_argument("--connection", default=DEFAULT_CONNECTION,
                          help='snow CLI connection name (default: "admin").')
+    account.add_argument("--role-name", default=DEFAULT_ROLE_NAME,
+                         help='Admin role name (default: "%s").' % DEFAULT_ROLE_NAME)
     account.add_argument("-v", "--verbose", action="store_true")
 
     return parser.parse_args(argv)
@@ -268,10 +274,10 @@ def main(argv=None) -> int:
     configure_logging(getattr(args, "verbose", False))
     command = getattr(args, "command", None)
     if command == "verify-contract":
-        verify_privilege_contract()
+        verify_privilege_contract(args.role_name)
     elif command == "assert-account-privileges":
         env = load_env()
-        assert_admin_account_privileges(env, args.connection)
+        assert_admin_account_privileges(env, args.connection, args.role_name)
     else:
         raise SystemExit(
             "Specify a subcommand: verify-contract | assert-account-privileges"

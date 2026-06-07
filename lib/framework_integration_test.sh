@@ -204,7 +204,7 @@ _test_domain_config_component() {
                 source '${SCRIPT_DIR}/domain_config_loader.sh' &&
                 load_domain_config '$TEST_CONFIG' &&
                 database=\$(get_domain_config 'domain.database') &&
-                [[ \"\$database\" == 'ARTWORK_DB' ]]
+                [[ \"\$database\" == '${TEST_DATABASE:-ARTWORK_DB}' ]]
             "
             
             _run_test "retrieve_mk07348_connection" "

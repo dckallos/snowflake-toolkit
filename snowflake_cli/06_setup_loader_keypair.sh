@@ -44,13 +44,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_lib.sh"
 
-LOADER_USER="${LOADER_USER:-ARTWORK_LOADER_SVC}"
-LOADER_ROLE="${LOADER_ROLE:-ARTWORK_LOADER}"
+LOADER_USER="${LOADER_USER:?ERROR: LOADER_USER must be set (e.g. ARTWORK_LOADER_SVC)}"
+LOADER_ROLE="${LOADER_ROLE:?ERROR: LOADER_ROLE must be set (e.g. ARTWORK_LOADER)}"
 LOADER_WAREHOUSE="${LOADER_WAREHOUSE:-${SNOW_LIB_DEFAULT_WAREHOUSE}}"
 KEY_DIR="${SNOW_LIB_KEY_DIR}"
 PRIVATE_KEY="${LOADER_PRIVATE_KEY:-$(loader_key_path p8)}"
 PUBLIC_KEY="${LOADER_PUBLIC_KEY:-$(loader_key_path pub)}"
-SQL_FILE="${SQL_FILE:-${REPO_ROOT}/git-setup/operator/register_loader_public_key.sql}"
+SQL_FILE="${SQL_FILE:-${SCRIPT_DIR}/sql/register_service_user_key.sql}"
 CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
 
 [[ -f "${SQL_FILE}" ]] || { echo "error: SQL file not found: ${SQL_FILE}" >&2; exit 66; }
@@ -79,7 +79,7 @@ PUBKEY="$(awk 'NR>1 && !/-----END/ {printf "%s", $0}' "${PUBLIC_KEY}")"
 echo "==> registering loader public key for user '${LOADER_USER}' via -c ${SNOW_LIB_ADMIN_CONN}"
 snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     --filename "${SQL_FILE}" \
-    --variable "loader_user=${LOADER_USER}" \
+    --variable "service_user=${LOADER_USER}" \
     --variable "rsa_public_key=${PUBKEY}" \
     --enhanced-exit-codes
 
