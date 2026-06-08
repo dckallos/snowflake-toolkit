@@ -105,46 +105,87 @@ check() {
 # checkpoint -- Write a run checkpoint to BRONZE.RUN_CONTROL
 # ---------------------------------------------------------------------------
 # Usage:
-#   checkpoint <run_id> <step> [status] [note]
-#   checkpoint abc123 extract_start running "Starting AIC extraction"
-#   checkpoint abc123 extract_end done
+#   checkpoint <run_id> <step> [--status <s>] [--note <n>] [--connection <c>]
+#   checkpoint abc123 extract_start
+#   checkpoint abc123 extract_start --status running --note "Starting AIC extraction"
+#   checkpoint abc123 extract_end --status done
+#   checkpoint abc123 extract_end --status done --connection mk07348
+#
+# Status values: running, done, failed, skipped (validated before execution).
+# Note can contain any characters (quotes, apostrophes, etc.) safely.
 # ---------------------------------------------------------------------------
 checkpoint() {
-  local run_id="${1:-}"
-  local step="${2:-}"
-  local status="${3:-running}"
-  local note="${4:-}"
+  local run_id=""
+  local step=""
+  local status="running"
+  local note=""
   local connection=""
 
-  if [[ -z "${run_id}" || -z "${step}" ]]; then
-    echo "Usage: checkpoint <run_id> <step> [status] [note] [--connection <name>]" >&2
-    return 1
-  fi
-
-  # Check for trailing --connection
-  shift 2  # consumed run_id and step
+  # Parse all arguments as named flags (positional for run_id and step only)
+  local positional=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --connection|-c)
         connection="$2"
         shift 2
         ;;
+      --status|-s)
+        status="$2"
+        shift 2
+        ;;
+      --note|-n)
+        note="$2"
+        shift 2
+        ;;
+      --help|-h)
+        echo "Usage: checkpoint <run_id> <step> [--status <s>] [--note <n>] [--connection <c>]"
+        echo "Status values: running, done, failed, skipped"
+        return 0
+        ;;
+      -*)
+        echo "checkpoint: unknown option $1" >&2
+        echo "Usage: checkpoint <run_id> <step> [--status <s>] [--note <n>] [--connection <c>]" >&2
+        return 1
+        ;;
       *)
-        if [[ -z "${status}" || "${status}" == "running" ]]; then
-          status="$1"
-        else
-          note="$1"
-        fi
+        positional+=("$1")
         shift
         ;;
     esac
   done
 
-  local sql="MERGE INTO ARTWORK_DB.BRONZE.RUN_CONTROL t
-USING (SELECT '${run_id}' AS run_id, '${step}' AS step) s
+  # Extract positional args
+  run_id="${positional[0]:-}"
+  step="${positional[1]:-}"
+
+  if [[ -z "${run_id}" || -z "${step}" ]]; then
+    echo "checkpoint: run_id and step are required" >&2
+    echo "Usage: checkpoint <run_id> <step> [--status <s>] [--note <n>] [--connection <c>]" >&2
+    return 1
+  fi
+
+  # Validate status enum
+  case "${status}" in
+    running|done|failed|skipped) ;;
+    *)
+      echo "checkpoint: invalid status '${status}'" >&2
+      echo "Allowed: running, done, failed, skipped" >&2
+      return 1
+      ;;
+  esac
+
+  # Build SQL using $$-quoted strings to safely handle any content.
+  # Snowflake's $$ delimiter prevents SQL injection from quotes in values.
+  local sql
+  sql="MERGE INTO ARTWORK_DB.BRONZE.RUN_CONTROL t
+USING (SELECT \$\$${run_id}\$\$ AS run_id, \$\$${step}\$\$ AS step) s
   ON t.run_id = s.run_id AND t.step = s.step
-WHEN MATCHED THEN UPDATE SET status='${status}', note='${note}', updated_at=CURRENT_TIMESTAMP()
-WHEN NOT MATCHED THEN INSERT (run_id, step, status, note) VALUES (s.run_id, s.step, '${status}', '${note}');"
+WHEN MATCHED THEN UPDATE SET
+  status = \$\$${status}\$\$,
+  note = \$\$${note}\$\$,
+  updated_at = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN INSERT (run_id, step, status, note)
+  VALUES (s.run_id, s.step, \$\$${status}\$\$, \$\$${note}\$\$);"
 
   local cmd=(snow sql --query "${sql}")
   if [[ -n "${connection}" ]]; then
