@@ -1,35 +1,104 @@
 #!/usr/bin/env bash
-# scripts/check.sh -- run an ad-hoc, READ-ONLY SQL check against Snowflake via the
-# Snowflake CLI. Standalone: NOT part of `make infra` / the orchestrator.
+# =============================================================================
+# check.sh -- Run an ad-hoc, READ-ONLY SQL check against Snowflake.
+# =============================================================================
+# Standalone utility. NOT part of `make infra` or the orchestrator.
+# Keep SQL files read-only; this is for inspection, not DDL.
 #
-# Usage:
-#   scripts/check.sh                          # default check: scripts/sql/show_active_sessions.sql
-#   scripts/check.sh scripts/sql/foo.sql      # run any SQL file (path relative to repo root or absolute)
-#   ARTWORK_SNOW_CONN=myconn scripts/check.sh # override connection (default: admin)
+# USAGE:
+#   check <sql-file>                         # uses snow CLI default connection
+#   check <sql-file> --connection mk07348    # explicit connection
+#   check                                    # default: sql/show_active_sessions.sql
 #
-# Drop new *.sql checks into scripts/sql/ and pass the path. Keep them read-only;
-# this wrapper is for inspection, not for DDL (DDL goes through `make infra`).
+# PATH RESOLUTION:
+#   Relative paths resolve from your current working directory.
+#   Absolute paths are used as-is.
+#   If no file is given, falls back to the toolkit's own default check.
+#
+# CONNECTION RESOLUTION (priority order):
+#   1. --connection <name>         (explicit flag)
+#   2. Snow CLI default connection (from ~/.snowflake/config.toml)
+#   3. ARTWORK_SNOW_CONN env var   (legacy fallback)
+#
+# SHELL FUNCTION (add to ~/.bashrc or ~/.zshrc):
+#   check() { bash ~/dev/snowflake-toolkit/check.sh "$@"; }
+#
+# =============================================================================
 set -euo pipefail
 
-# Resolve repo root from this script's location so it works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-CONN="${ARTWORK_SNOW_CONN:-admin}"
-SQL_ARG="${1:-scripts/sql/show_active_sessions.sql}"
+# -----------------------------------------------------------------------------
+# Parse arguments
+# -----------------------------------------------------------------------------
+SQL_ARG=""
+CONN=""
 
-# Accept absolute paths as-is; otherwise resolve relative to the repo root.
-if [[ "${SQL_ARG}" = /* ]]; then
-  SQL_FILE="${SQL_ARG}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --connection|-c)
+            CONN="$2"
+            shift 2
+            ;;
+        --help|-h)
+            sed -n '/^# USAGE:/,/^# =====/{ /^# =====/d; s/^# \{0,2\}//; p }' "$0"
+            exit 0
+            ;;
+        *)
+            SQL_ARG="$1"
+            shift
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Resolve connection
+# -----------------------------------------------------------------------------
+if [[ -z "${CONN}" ]]; then
+    # Try snow CLI default connection
+    if command -v snow >/dev/null 2>&1; then
+        CONN=$(snow connection list --format json 2>/dev/null \
+            | python3 -c "import sys,json; conns=json.load(sys.stdin); print(next((c['connection_name'] for c in conns if c.get('is_default')), ''))" 2>/dev/null) || CONN=""
+    fi
+fi
+
+# Legacy fallback
+if [[ -z "${CONN}" ]]; then
+    CONN="${ARTWORK_SNOW_CONN:-}"
+fi
+
+if [[ -z "${CONN}" ]]; then
+    echo "ERROR: No connection resolved." >&2
+    echo "  Options:" >&2
+    echo "    check <file> --connection <name>" >&2
+    echo "    snow connection set-default <name>" >&2
+    echo "    export ARTWORK_SNOW_CONN=<name>" >&2
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Resolve SQL file path
+# -----------------------------------------------------------------------------
+if [[ -z "${SQL_ARG}" ]]; then
+    # Default: toolkit's own active-sessions check
+    SQL_FILE="${SCRIPT_DIR}/sql/show_active_sessions.sql"
+elif [[ "${SQL_ARG}" = /* ]]; then
+    # Absolute path: use as-is
+    SQL_FILE="${SQL_ARG}"
 else
-  SQL_FILE="${REPO_ROOT}/${SQL_ARG}"
+    # Relative path: resolve from caller's CWD
+    SQL_FILE="$(pwd)/${SQL_ARG}"
 fi
 
 if [[ ! -f "${SQL_FILE}" ]]; then
-  echo "ERROR: SQL file not found: ${SQL_FILE}" >&2
-  echo "Hint: pass a path relative to the repo root, e.g. scripts/sql/show_active_sessions.sql" >&2
-  exit 1
+    echo "ERROR: SQL file not found: ${SQL_FILE}" >&2
+    echo "  Looked for: ${SQL_ARG}" >&2
+    echo "  Resolved from CWD: $(pwd)" >&2
+    exit 1
 fi
 
-echo "==> check.sh [connection: ${CONN}] ${SQL_FILE}"
+# -----------------------------------------------------------------------------
+# Execute
+# -----------------------------------------------------------------------------
+echo "==> check [${CONN}] $(basename "${SQL_FILE}")"
 exec snow sql --connection "${CONN}" --filename "${SQL_FILE}" --enhanced-exit-codes
