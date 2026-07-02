@@ -84,7 +84,7 @@ TARGET_WAREHOUSE="${TARGET_WAREHOUSE:-ARTWORK_WH}"
 echo "==> Step 1/4: verify ${TARGET_WAREHOUSE} exists in Snowflake"
 SHOW_OUTPUT="$(snow sql -c "${SNOW_LIB_ADMIN_CONN}" \
     -q "SHOW WAREHOUSES LIKE '${TARGET_WAREHOUSE}';" \
-    --format=plain \
+    --format=CSV \
     --enhanced-exit-codes)"
 
 if ! grep -qi "${TARGET_WAREHOUSE}" <<<"${SHOW_OUTPUT}"; then
