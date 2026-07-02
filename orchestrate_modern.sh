@@ -35,7 +35,7 @@ readonly ORCHESTRATE_MODERN_CREATED="2026-06-02"
 
 # Script configuration  
 readonly MODERN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "${MODERN_SCRIPT_DIR}/.." && pwd)"
+readonly REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 
 # Source framework components
 source "${MODERN_SCRIPT_DIR}/lib/connection_resolver.sh"

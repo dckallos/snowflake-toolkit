@@ -1,151 +1,134 @@
 #!/usr/bin/env bash
 # ============================================================
-# scripts/bootstrap_chmod.sh -- Canonical chmod policy for every .sh file
-# in the bootstrap.py call graph.
+# bootstrap_chmod.sh -- Canonical chmod policy for every .sh file
+# in the IaC call graph.
 #
 # Purpose:
-#   Guarantee that every shell script the IaC layer invokes
-#   (apply_sql.sh, rollback_sql.sh, run_pipeline.sh, every script under
-#   scripts/snowflake_cli/, and this file itself) carries mode 0755 on
-#   the operator's filesystem -- regardless of whether the file arrived
-#   from a fresh git clone (which preserves the executable bit if it was
-#   committed via `git update-index --chmod=+x`) or from a copy-paste of
-#   the Notion source pages (which arrive as mode 0644 by default).
+# Guarantee that every shell script the IaC layer invokes carries
+# mode 0755 on the operator's filesystem -- regardless of whether the
+# file arrived from a fresh git clone or a copy-paste (mode 0644).
 #
-# Why this exists:
-#   Before this script existed, `make iac` would fail at the very first
-#   `subprocess.run(["scripts/apply_sql.sh", ...])` call inside
-#   scripts/bootstrap.py with:
+# Allow-lists:
+# Reads TWO allow-lists (both optional individually, but at least one
+# must exist):
+#   1. ${TOOLKIT_DIR}/executable_files.txt  -- toolkit's own scripts
+#   2. scripts/executable_files.txt         -- project-local scripts
 #
-#     PermissionError: [Errno 13] Permission denied:
-#       '/Users/<...>/scripts/apply_sql.sh'
-#
-#   because apply_sql.sh shipped as mode 0644. The existing
-#   scripts/snowflake_cli/setup.sh::chmod_children() helper only chmoded
-#   scripts/snowflake_cli/*.sh and therefore missed apply_sql.sh,
-#   rollback_sql.sh, and any other .sh one directory up. This script is
-#   the single source of truth: every .sh path the IaC contract depends
-#   on is enumerated in ALLOW_LIST below.
+# Each file contains one repo-relative path per line; blank lines and
+# #-comments are ignored. Paths in the toolkit list are resolved
+# relative to TOOLKIT_DIR; paths in the project list are resolved
+# relative to the project root (CWD).
 #
 # Bootstrap workaround:
-#   This script is itself part of the call graph, so it must be runnable
-#   even when its own mode is 0644 on a fresh clone. The Makefile invokes
-#   it as `bash scripts/bootstrap_chmod.sh` (not `./scripts/...`) so the
-#   POSIX shell loads it as a plain text file -- no executable bit
-#   required on the file itself. The script then chmods itself (along
-#   with everything else in ALLOW_LIST) so subsequent direct invocations
-#   (`./scripts/...`) also work.
+# The Makefile invokes this as `bash $(TOOLKIT_DIR)/bootstrap_chmod.sh`
+# so the POSIX shell loads it as a plain text file -- no executable bit
+# required on the file itself.
 #
 # Idempotency:
-#   chmod 755 is naturally idempotent. A second invocation prints
-#   identical before/after columns for every entry and returns 0.
-#
-# Acceptance:
-#   - Every path in ALLOW_LIST exists and is mode 0755 (verified via
-#     `test -x` at the end).
-#   - Missing paths fail fast with a clear error.
-#   - Output includes a summary table (path | before | after).
-#
-# Refs:
-#   https://git-scm.com/docs/git-update-index  (run
-#   scripts/git_mark_executable.sh once per repo to store +x in the git
-#   tree itself; thereafter `make chmod` is a defensive safety net for
-#   files copy-pasted from the Notion source pages.)
+# chmod 755 is naturally idempotent. A second invocation prints
+# identical before/after columns for every entry and returns 0.
 # ============================================================
 set -euo pipefail
 
-# Resolve to repo root so all paths are stable regardless of CWD.
-cd "$(git rev-parse --show-toplevel)"
+TOOLKIT_DIR="${TOOLKIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
-# ----------------------------------------------------------------------
-# ALLOW_LIST -- every .sh in the bootstrap.py call graph.
-# Single source of truth: scripts/executable_files.txt (one path per line;
-# blank lines and #-comments ignored). Read with a Bash 3.2-safe
-# `while IFS= read -r` loop (no mapfile) so this works on macOS system bash
-# and Linux alike. scripts/git_mark_executable.sh reads the same file, so the
-# two helpers can never drift.
-# ----------------------------------------------------------------------
-EXEC_LIST_FILE="scripts/executable_files.txt"
-if [[ ! -f "${EXEC_LIST_FILE}" ]]; then
-    echo "error: ${EXEC_LIST_FILE} not found (required allow-list)" >&2
-    exit 66
-fi
-ALLOW_LIST=()
-while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%%#*}"
-    line="${line//[[:space:]]/}"
-    [[ -z "${line}" ]] && continue
-    ALLOW_LIST+=("${line}")
-done < "${EXEC_LIST_FILE}"
-
-# Guard: an empty/all-comment allow-list would trip `set -u` on the
-# "${ALLOW_LIST[@]}" expansion below (Bash 3.2). Fail fast instead.
-if [[ ${#ALLOW_LIST[@]} -eq 0 ]]; then
-    echo "error: ${EXEC_LIST_FILE} has no usable entries (empty or all comments)" >&2
-    exit 66
-fi
+toolkit_list="${TOOLKIT_DIR}/executable_files.txt"
+project_list="scripts/executable_files.txt"
 
 # Portable octal mode read (GNU coreutils: stat -c %a; BSD/macOS: stat -f %Lp).
 mode_of() {
-    if stat -c %a "$1" >/dev/null 2>&1; then
-        stat -c %a "$1"
-    else
-        stat -f %Lp "$1"
-    fi
+  if stat -c %a "$1" >/dev/null 2>&1; then
+    stat -c %a "$1"
+  else
+    stat -f %Lp "$1"
+  fi
 }
 
 declare -a SUMMARY_ROWS=()
 declare -a MISSING=()
+found_any=false
 
-for path in "${ALLOW_LIST[@]}"; do
-    if [[ ! -f "${path}" ]]; then
-        MISSING+=("${path}")
-        continue
+# ----------------------------------------------------------------------
+# process_list <list_file> <base_dir>
+# Reads an allow-list and chmods each entry relative to base_dir.
+# ----------------------------------------------------------------------
+process_list() {
+  local list_file="$1"
+  local base_dir="$2"
+  [[ -f "$list_file" ]] || return 0
+  found_any=true
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [[ -z "${line}" ]] && continue
+
+    local target="${base_dir}/${line}"
+    if [[ ! -f "${target}" ]]; then
+      MISSING+=("${target}")
+      continue
     fi
-    before="$(mode_of "${path}")"
-    chmod 755 "${path}"
-    after="$(mode_of "${path}")"
-    SUMMARY_ROWS+=("${path}|${before}|${after}")
-done
+
+    local before after
+    before="$(mode_of "${target}")"
+    chmod 755 "${target}"
+    after="$(mode_of "${target}")"
+    SUMMARY_ROWS+=("${target}|${before}|${after}")
+  done < "$list_file"
+}
+
+# Process toolkit scripts (resolved relative to TOOLKIT_DIR)
+process_list "$toolkit_list" "$TOOLKIT_DIR"
+
+# Process project-local scripts (resolved relative to CWD / project root)
+process_list "$project_list" "."
+
+# ----------------------------------------------------------------------
+# Guard: at least one allow-list must exist.
+# ----------------------------------------------------------------------
+if [[ "$found_any" == false ]]; then
+  echo "error: neither ${toolkit_list} nor ${project_list} found (required allow-list)" >&2
+  exit 66
+fi
 
 # ----------------------------------------------------------------------
 # Summary table.
 # ----------------------------------------------------------------------
-printf '\n%-55s | %-6s | %-5s\n' "path" "before" "after"
-printf '%s\n' "------------------------------------------------------------------------"
-for row in "${SUMMARY_ROWS[@]}"; do
+if [[ ${#SUMMARY_ROWS[@]} -gt 0 ]]; then
+  printf '\n%-60s | %-6s | %-5s\n' "path" "before" "after"
+  printf '%s\n' "-----------------------------------------------------------------------------"
+  for row in "${SUMMARY_ROWS[@]}"; do
     IFS='|' read -r p b a <<<"${row}"
-    printf '%-55s | %-6s | %-5s\n' "${p}" "${b}" "${a}"
-done
+    printf '%-60s | %-6s | %-5s\n' "${p}" "${b}" "${a}"
+  done
+fi
 
 # ----------------------------------------------------------------------
-# Verify every chmoded path is executable. Fail fast on any miss.
+# Verify every chmoded path is executable.
 # ----------------------------------------------------------------------
 fail=0
 for row in "${SUMMARY_ROWS[@]}"; do
-    IFS='|' read -r p _b _a <<<"${row}"
-    if [[ ! -x "${p}" ]]; then
-        echo "error: ${p} is not executable after chmod 755" >&2
-        fail=1
-    fi
+  IFS='|' read -r p _b _a <<<"${row}"
+  if [[ ! -x "${p}" ]]; then
+    echo "error: ${p} is not executable after chmod 755" >&2
+    fail=1
+  fi
 done
 
 # ----------------------------------------------------------------------
-# Missing-path handling: any entry in ALLOW_LIST missing on disk is a
-# hard failure. The ${#MISSING[@]} guard is required because `set -u`
-# treats expansion of an EMPTY array via "${MISSING[@]}" as an unbound
-# variable on Bash 3.2 (macOS system Bash), which would otherwise abort
-# the script on the happy path where every file is present.
+# Missing-path handling: soft warning, not hard failure.
+# After repo separation some toolkit entries may not exist in every
+# consuming project -- that's expected. Warn but don't block.
 # ----------------------------------------------------------------------
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-    for path in "${MISSING[@]}"; do
-        echo "error: ${path} listed in ALLOW_LIST but not found on disk" >&2
-        fail=1
-    done
+  echo "warning: ${#MISSING[@]} path(s) in allow-list not found on disk (skipped):" >&2
+  for path in "${MISSING[@]}"; do
+    echo "  - ${path}" >&2
+  done
 fi
 
 if [[ ${fail} -ne 0 ]]; then
-    exit 1
+  exit 1
 fi
 
 echo

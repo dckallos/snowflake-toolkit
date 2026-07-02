@@ -43,7 +43,7 @@ SNOW_LIB_CONFIG_TOML="${SNOW_LIB_CONFIG_TOML:-${HOME}/.snowflake/config.toml}"
 SNOW_LIB_CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML:-${HOME}/.snowflake/connections.toml}"
 
 # Default warehouse used when neither an env var nor config.toml provides one.
-SNOW_LIB_DEFAULT_WAREHOUSE="${SNOW_LIB_DEFAULT_WAREHOUSE:-}"
+SNOW_LIB_DEFAULT_WAREHOUSE="${SNOW_LIB_DEFAULT_WAREHOUSE:-ARTWORK_WH}"
 
 # ------------------------------------------------------------
 # Multi-account connection-name model.
