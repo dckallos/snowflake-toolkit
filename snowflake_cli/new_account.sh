@@ -1,151 +1,135 @@
 #!/usr/bin/env bash
 # ============================================================
-# scripts/snowflake_cli/new_account.sh -- Guided wrapper for onboarding a new
-# Snowflake account into the multi-account connection framework.
+# snowflake_cli/new_account.sh -- guided, profile-safe Snowflake account onboarding.
 #
-# Runs setup.sh --profile <LABEL> --phase prereq + admin, then prints the
-# exact next-step commands (make iac, promote, loader, transformer) with
-# the correct --profile flag pre-filled.
-#
-# USAGE:
-#   ./scripts/snowflake_cli/new_account.sh <PROFILE>
-#   ./scripts/snowflake_cli/new_account.sh hw58276
-#
-# WHAT IT DOES (local + one-shot Snowflake bootstrap):
-#   1. Generates (or reuses) the admin RSA key pair for the profile
-#   2. Seeds [<PROFILE>] in ~/.snowflake/connections.toml (prompts for
-#      SNOWFLAKE_ACCOUNT and SNOWFLAKE_ADMIN_USER if not exported)
-#   3. Locks file permissions
-#   4. Registers the admin public key on the account (prompts for password once)
-#   5. Verifies JWT auth works
-#   6. Prints remaining steps with paste-ready commands
-#
-# PREREQUISITES:
-#   - snow CLI installed (or script 00 will install it)
-#   - The target account exists and you know the admin credentials
-#
-# ENVIRONMENT OVERRIDES (all optional -- prompted interactively if unset):
-#   SNOWFLAKE_ACCOUNT       e.g. JHTJUUT-HW58276
-#   SNOWFLAKE_ADMIN_USER    e.g. PORCHSNOW
-#   SNOWFLAKE_PASSWORD      admin password (prompted securely if unset)
+# This wrapper prevents project .env pollution from influencing admin bootstrap.
+# It passes explicit admin values to setup.sh using SNOWFLAKE_ADMIN_* variables
+# and unsets generic SNOWFLAKE_* runtime variables in the child process.
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-    cat <<'EOF'
-usage: new_account.sh <PROFILE>
+    cat <<'USAGE'
+usage: new_account.sh --profile PROFILE --account ORG-ACCOUNT --admin-user USER [options]
 
-  PROFILE   A short label for this account (e.g. hw58276, mk07348, prod).
-            Becomes the connection name prefix:
-              [<PROFILE>]              admin connection
-              [<PROFILE>_loader]       loader service connection
-              [<PROFILE>_transformer]  transformer service connection
-            Key files are namespaced: <PROFILE>_rsa_key.p8, etc.
+Required:
+  --profile PROFILE       Local connection prefix, e.g. kw94245
+  --account ACCOUNT       Snowflake account identifier, e.g. DSHXYWJ-KW94245
+  --admin-user USER       Snowflake login name, e.g. PORCHORCH
 
-  Examples:
-    ./scripts/snowflake_cli/new_account.sh hw58276
-    SNOWFLAKE_ACCOUNT=JHTJUUT-HW58276 ./scripts/snowflake_cli/new_account.sh hw58276
-EOF
-    exit 64
+Options:
+  --admin-role ROLE       Admin role for registration. Default: ACCOUNTADMIN
+  --init-warehouse WH     Existing day-one warehouse. Default: COMPUTE_WH
+  --target-warehouse WH   Post-IaC warehouse for promote. Default: ARTWORK_WH
+  --replace-existing      Rewrite an existing local [PROFILE] block after backup.
+  --no-admin              Only seed prereqs/profile; do not register the admin key.
+
+Examples:
+  ./snowflake_cli/new_account.sh --profile kw94245 \
+    --account DSHXYWJ-KW94245 --admin-user PORCHORCH
+
+  ./snowflake_cli/new_account.sh --profile kw94245 \
+    --account DSHXYWJ-KW94245 --admin-user PORCHORCH --replace-existing
+USAGE
 }
 
-if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
-    usage
+PROFILE=""
+ACCOUNT=""
+ADMIN_USER=""
+ADMIN_ROLE="ACCOUNTADMIN"
+INIT_WAREHOUSE="COMPUTE_WH"
+TARGET_WAREHOUSE="ARTWORK_WH"
+REPLACE_EXISTING=0
+RUN_ADMIN=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile) PROFILE="${2:-}"; shift 2 ;;
+        --account) ACCOUNT="${2:-}"; shift 2 ;;
+        --admin-user) ADMIN_USER="${2:-}"; shift 2 ;;
+        --admin-role) ADMIN_ROLE="${2:-}"; shift 2 ;;
+        --init-warehouse|--admin-warehouse) INIT_WAREHOUSE="${2:-}"; shift 2 ;;
+        --target-warehouse) TARGET_WAREHOUSE="${2:-}"; shift 2 ;;
+        --replace-existing) REPLACE_EXISTING=1; shift ;;
+        --no-admin) RUN_ADMIN=0; shift ;;
+        -h|--help|help) usage; exit 0 ;;
+        *) echo "error: unknown argument '$1'" >&2; usage >&2; exit 64 ;;
+    esac
+done
+
+[[ -n "${PROFILE}" ]] || { echo "error: --profile is required" >&2; usage >&2; exit 64; }
+[[ -n "${ACCOUNT}" ]] || { echo "error: --account is required" >&2; usage >&2; exit 64; }
+[[ -n "${ADMIN_USER}" ]] || { echo "error: --admin-user is required" >&2; usage >&2; exit 64; }
+[[ "${PROFILE}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "error: invalid profile '${PROFILE}'" >&2; exit 64; }
+
+SETUP_ARGS=(
+    --profile "${PROFILE}"
+    --account "${ACCOUNT}"
+    --admin-user "${ADMIN_USER}"
+    --admin-role "${ADMIN_ROLE}"
+    --init-warehouse "${INIT_WAREHOUSE}"
+    --target-warehouse "${TARGET_WAREHOUSE}"
+)
+if [[ "${REPLACE_EXISTING}" -eq 1 ]]; then
+    SETUP_ARGS+=(--replace-existing)
 fi
 
-PROFILE="$1"
+cat <<STATUS
+==> Onboarding Snowflake account
+    profile:          ${PROFILE}
+    account:          ${ACCOUNT}
+    admin user:       ${ADMIN_USER}
+    admin role:       ${ADMIN_ROLE}
+    init warehouse:   ${INIT_WAREHOUSE}
+    target warehouse: ${TARGET_WAREHOUSE}
+STATUS
 
-if [[ ! "${PROFILE}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    echo "error: invalid profile name '${PROFILE}'" >&2
-    echo "       allowed characters: letters, digits, underscore, hyphen" >&2
-    exit 64
+echo "==> Clearing generic runtime Snowflake variables in this child process"
+
+env -u SNOWFLAKE_ACCOUNT \
+    -u SNOWFLAKE_USER \
+    -u SNOWFLAKE_ROLE \
+    -u SNOWFLAKE_WAREHOUSE \
+    -u SNOWFLAKE_DATABASE \
+    -u SNOWFLAKE_SCHEMA \
+    -u SNOWFLAKE_PRIVATE_KEY_FILE \
+    -u SNOWFLAKE_PRIVATE_KEY_PATH \
+    -u SNOWFLAKE_AUTHENTICATOR \
+    bash "${SCRIPT_DIR}/setup.sh" "${SETUP_ARGS[@]}" --phase prereq
+
+if [[ "${RUN_ADMIN}" -eq 1 ]]; then
+    env -u SNOWFLAKE_ACCOUNT \
+        -u SNOWFLAKE_USER \
+        -u SNOWFLAKE_ROLE \
+        -u SNOWFLAKE_WAREHOUSE \
+        -u SNOWFLAKE_DATABASE \
+        -u SNOWFLAKE_SCHEMA \
+        -u SNOWFLAKE_PRIVATE_KEY_FILE \
+        -u SNOWFLAKE_PRIVATE_KEY_PATH \
+        -u SNOWFLAKE_AUTHENTICATOR \
+        bash "${SCRIPT_DIR}/setup.sh" "${SETUP_ARGS[@]}" --phase admin
 fi
 
-echo "==> Onboarding new account with profile: ${PROFILE}"
-echo "==> Connection names: admin='${PROFILE}' loader='${PROFILE}_loader' transformer='${PROFILE}_transformer'"
-echo "==> Key files: ~/.snowflake/keys/${PROFILE}_rsa_key.p8 (+ loader/transformer variants)"
-echo
-
-# Strip ALL Snowflake env vars that the snow CLI treats as connection-level
-# overrides. Without this, a stale SNOWFLAKE_ROLE (etc.) from a prior session
-# bleeds into the fresh admin connection and causes "role does not exist" errors
-# on the new account (where project roles haven't been created yet).
-# This is safe: we're in a child process, so the parent shell is unaffected.
-unset SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER SNOWFLAKE_PASSWORD \
-      SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE SNOWFLAKE_SCHEMA \
-      SNOWFLAKE_USER SNOWFLAKE_AUTHENTICATOR SNOWFLAKE_PRIVATE_KEY_PATH \
-      SNOW_LIB_KEY_DIR SNOW_LIB_CONNECTIONS_TOML SNOW_LIB_CONFIG_TOML \
-      SNOW_LIB_DEFAULT_WAREHOUSE 2>/dev/null || true
-
-# shellcheck source=/dev/null
-source "${SCRIPT_DIR}/_lib.sh"
-
-"${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase prereq
-
-# Guarantee the admin connection block has safe defaults for a fresh account
-# where project objects (ARTWORK_WH, ARTWORK_LOADER role, etc.) don't exist yet.
-# init_profile.sh's non-destructive guard correctly preserves account/user/key
-# on re-runs, but role and warehouse can be poisoned by a prior SNOWFLAKE_ROLE /
-# SNOWFLAKE_WAREHOUSE leak or by _lib.sh's ARTWORK_WH default.
-CONNECTIONS_TOML="${SNOW_LIB_CONNECTIONS_TOML}"
-
-# Role must be ACCOUNTADMIN (the only role guaranteed to exist pre-IaC).
-CURRENT_ROLE="$(parse_toml_value "${PROFILE}" 'role' "${CONNECTIONS_TOML}")"
-if [[ "${CURRENT_ROLE}" != "ACCOUNTADMIN" ]]; then
-    echo "==> [${PROFILE}].role is '${CURRENT_ROLE}'; correcting to ACCOUNTADMIN"
-    upsert_toml_value_in_section "${PROFILE}" 'role' 'ACCOUNTADMIN' "${CONNECTIONS_TOML}"
-fi
-
-# Warehouse must be COMPUTE_WH (the account-default that exists on day one).
-# ARTWORK_WH is created later by `make iac`; using it here fails connection test.
-CURRENT_WH="$(parse_toml_value "${PROFILE}" 'warehouse' "${CONNECTIONS_TOML}")"
-if [[ "${CURRENT_WH}" != "COMPUTE_WH" ]]; then
-    echo "==> [${PROFILE}].warehouse is '${CURRENT_WH}'; correcting to COMPUTE_WH"
-    upsert_toml_value_in_section "${PROFILE}" 'warehouse' 'COMPUTE_WH' "${CONNECTIONS_TOML}"
-fi
-
-"${SCRIPT_DIR}/setup.sh" --profile "${PROFILE}" --phase admin
-
-cat <<EOF
+cat <<NEXT
 
 ===================================================================
-ACCOUNT ONBOARDED: ${PROFILE}
+ACCOUNT PROFILE READY: ${PROFILE}
 ===================================================================
 
-Admin connection [${PROFILE}] is live and verified (JWT auth).
+Admin profile:
+  [${PROFILE}] account=${ACCOUNT} user=${ADMIN_USER} role=${ADMIN_ROLE} warehouse=${INIT_WAREHOUSE}
 
-Next steps (paste these in order):
+Next commands from your artwork-db project root:
+  make infra CONN=${PROFILE}
+  ${SCRIPT_DIR}/setup.sh --profile ${PROFILE} --target-warehouse ${TARGET_WAREHOUSE} --phase promote
+  ${SCRIPT_DIR}/setup.sh --profile ${PROFILE} --phase loader
+  ${SCRIPT_DIR}/setup.sh --profile ${PROFILE} --phase transformer
+  ${SCRIPT_DIR}/setup.sh --profile ${PROFILE} --phase switch
 
-  1a. Deploy infrastructure ONLY (no git mirror, no PAT needed):
-      make infra CONN=${PROFILE}
-
-  1b. OR deploy infra + git mirror (requires a GitHub PAT):
-      make iac CONN=${PROFILE} VARS="github_pat=ghp_..."
-
-      (git mirror can also be added later standalone:
-      make bootstrap CONN=${PROFILE} VARS="github_pat=ghp_...")
-
-  2. Promote admin connection to ARTWORK_WH:
-     ./scripts/snowflake_cli/setup.sh --profile ${PROFILE} --phase promote
-
-  3. Bootstrap the loader service user:
-     ./scripts/snowflake_cli/setup.sh --profile ${PROFILE} --phase loader
-
-  4. Bootstrap the transformer (dbt) service user:
-     ./scripts/snowflake_cli/setup.sh --profile ${PROFILE} --phase transformer
-
-  5. Make this the default connection:
-     ./scripts/snowflake_cli/setup.sh --profile ${PROFILE} --phase switch
-
-Resulting connections.toml blocks:
-  [${PROFILE}]              -> admin (ACCOUNTADMIN, JWT)
-  [${PROFILE}_loader]       -> ARTWORK_LOADER_SVC (key-pair)
-  [${PROFILE}_transformer]  -> ARTWORK_TRANSFORMER_SVC (key-pair)
-
-Use with orchestrate_modern.sh:
-  scripts/orchestrate_modern.sh --ddl-dir infrastructure/ \\
-    --manifest scripts/manifest.txt --phase infra --connection ${PROFILE}
+Or run the end-to-end activator from artwork-db:
+  ${SCRIPT_DIR%/snowflake_cli}/activate_mac.sh --profile ${PROFILE} \
+    --account ${ACCOUNT} --admin-user ${ADMIN_USER} --project-dir .
 ===================================================================
-EOF
+NEXT

@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# activate_mac.sh -- 🖥️  Activate this Mac as the primary control plane
+# activate_mac.sh -- activate this Mac as the Snowflake control plane.
 #
-# Registers all RSA keys (admin + service users) and applies IaC from
-# this machine. After running, this Mac owns all key slots and can
-# execute the full project workflow (make iac, service-user scripts, etc.).
+# End-to-end flow:
+#   prereq -> admin key registration -> project IaC -> promote -> loader -> transformer.
 #
-# Usage:
-#   ./activate_mac.sh [--profile PROFILE] [--project-dir DIR] [--iac-target TARGET]
-#
-# Default profile: mk07348
-# Default project dir: current working directory
-# Default IaC target: infra
-#
-# ⚠️  WARNING: Running this on Mac B invalidates Mac A's keys.
-#    Only ONE Mac can be active at a time (Snowflake slot-1 limitation).
-#    A future dual-slot solution will remove this constraint.
+# Safe profile creation is explicit: pass --account and --admin-user for a new
+# account. Generic project .env variables are stripped from every setup phase so
+# old SNOWFLAKE_ACCOUNT / SNOWFLAKE_ROLE values cannot poison admin bootstrap.
 # ============================================================
 set -euo pipefail
 
@@ -24,21 +16,30 @@ TOOLKIT_DIR="${SCRIPT_DIR}"
 
 usage() {
     local code="${1:-64}"
-    cat <<'EOF'
-usage: activate_mac.sh [--profile PROFILE] [--project-dir DIR] [--iac-target TARGET]
+    cat <<'USAGE'
+usage: activate_mac.sh --profile PROFILE [--account ACCOUNT --admin-user USER] [options]
 
-  --profile PROFILE     Snowflake connection profile to activate.
-                        Default: mk07348
-  --project-dir DIR     Project directory containing the Makefile that applies
-                        IaC. Default: current working directory.
-  --iac-target TARGET   Make target to run after admin bootstrap.
-                        Default: infra
+Required for a brand-new account/profile:
+  --profile PROFILE       Local connection prefix, e.g. kw94245
+  --account ACCOUNT       Snowflake account identifier, e.g. DSHXYWJ-KW94245
+  --admin-user USER       Snowflake login name, e.g. PORCHORCH
+
+Options:
+  --project-dir DIR       Project directory containing the Makefile. Default: current dir
+  --iac-target TARGET     Make target to run after admin bootstrap. Default: infra
+  --admin-role ROLE       Admin role for registration. Default: ACCOUNTADMIN
+  --init-warehouse WH     Existing day-one warehouse. Default: COMPUTE_WH
+  --target-warehouse WH   Post-IaC admin warehouse. Default: ARTWORK_WH
+  --replace-existing      Rewrite an existing local [PROFILE] block after backup
+  --yes                   Skip confirmation prompt
 
 Examples:
-  ./activate_mac.sh --profile mk07348
-  ./activate_mac.sh --profile clientb --project-dir /path/to/project
-  ./activate_mac.sh --profile clientb --iac-target iac
-EOF
+  ../snowflake-toolkit/activate_mac.sh --profile kw94245 \
+    --account DSHXYWJ-KW94245 --admin-user PORCHORCH --project-dir .
+
+  ../snowflake-toolkit/activate_mac.sh --profile kw94245 \
+    --account DSHXYWJ-KW94245 --admin-user PORCHORCH --replace-existing --project-dir .
+USAGE
     exit "${code}"
 }
 
@@ -63,31 +64,49 @@ has_makefile() {
     [[ -f "${dir}/GNUmakefile" || -f "${dir}/makefile" || -f "${dir}/Makefile" ]]
 }
 
-# --- Parse args ---------------------------------------------------------------
-PROFILE="mk07348"
+run_setup_clean() {
+    env -u SNOWFLAKE_ACCOUNT \
+        -u SNOWFLAKE_USER \
+        -u SNOWFLAKE_ROLE \
+        -u SNOWFLAKE_WAREHOUSE \
+        -u SNOWFLAKE_DATABASE \
+        -u SNOWFLAKE_SCHEMA \
+        -u SNOWFLAKE_PRIVATE_KEY_FILE \
+        -u SNOWFLAKE_PRIVATE_KEY_PATH \
+        -u SNOWFLAKE_AUTHENTICATOR \
+        bash "${SETUP_SH}" "${SETUP_ARGS[@]}" "$@"
+}
+
+PROFILE=""
+ACCOUNT=""
+ADMIN_USER=""
+ADMIN_ROLE="ACCOUNTADMIN"
+INIT_WAREHOUSE="COMPUTE_WH"
+TARGET_WAREHOUSE="ARTWORK_WH"
 PROJECT_DIR="${PROJECT_DIR:-${PWD}}"
 IAC_TARGET="${IAC_TARGET:-infra}"
+REPLACE_EXISTING=0
+ASSUME_YES=0
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --profile)
-            [[ -n "${2:-}" ]] || { echo "❌ --profile requires a value" >&2; exit 64; }
-            PROFILE="$2"
-            shift 2
-            ;;
-        --project-dir)
-            [[ -n "${2:-}" ]] || { echo "❌ --project-dir requires a value" >&2; exit 64; }
-            PROJECT_DIR="$2"
-            shift 2
-            ;;
-        --iac-target)
-            [[ -n "${2:-}" ]] || { echo "❌ --iac-target requires a value" >&2; exit 64; }
-            IAC_TARGET="$2"
-            shift 2
-            ;;
+        --profile) PROFILE="${2:-}"; shift 2 ;;
+        --account) ACCOUNT="${2:-}"; shift 2 ;;
+        --admin-user) ADMIN_USER="${2:-}"; shift 2 ;;
+        --admin-role) ADMIN_ROLE="${2:-}"; shift 2 ;;
+        --init-warehouse|--admin-warehouse) INIT_WAREHOUSE="${2:-}"; shift 2 ;;
+        --target-warehouse) TARGET_WAREHOUSE="${2:-}"; shift 2 ;;
+        --project-dir) PROJECT_DIR="${2:-}"; shift 2 ;;
+        --iac-target) IAC_TARGET="${2:-}"; shift 2 ;;
+        --replace-existing) REPLACE_EXISTING=1; shift ;;
+        --yes|-y) ASSUME_YES=1; shift ;;
         -h|--help|help) usage 0 ;;
         *) echo "❌ Unknown argument: $1" >&2; usage 64 ;;
     esac
 done
+
+[[ -n "${PROFILE}" ]] || { echo "❌ --profile is required" >&2; usage 64; }
+[[ "${PROFILE}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "❌ Invalid profile: ${PROFILE}" >&2; exit 64; }
 
 SETUP_SH="$(find_setup_script)" || {
     echo "❌ Could not find snowflake_cli/setup.sh from ${TOOLKIT_DIR}" >&2
@@ -100,93 +119,86 @@ PROJECT_DIR="$(cd "${PROJECT_DIR}" 2>/dev/null && pwd)" || {
 }
 
 if ! has_makefile "${PROJECT_DIR}"; then
-    cat >&2 <<EOF
+    cat >&2 <<MSG
 ❌ No Makefile found in project dir: ${PROJECT_DIR}
 
-activate_mac.sh now runs Snowflake CLI setup from the toolkit directory, but
-applies IaC from --project-dir (default: the directory you ran it from).
-
-Run this from your project root, or pass:
-  --project-dir /path/to/project
-EOF
+Run this from your artwork-db root, or pass:
+  --project-dir /path/to/artwork-db
+MSG
     exit 66
 fi
 
-echo ""
-echo "🖥️  Activating this Mac as primary control plane"
-echo "   Profile: ${PROFILE}"
-echo "   Toolkit: ${TOOLKIT_DIR}"
-echo "   Project: ${PROJECT_DIR}"
-echo "   IaC: make ${IAC_TARGET} CONN=${PROFILE}"
-echo ""
-echo "⚠️  This will register THIS Mac's keys in Snowflake."
-echo "   Any other Mac's keys will be invalidated (slot-1 overwrite)."
-echo ""
-read -rp "🔑 Proceed? [y/N] " confirm
-if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
-    echo "❌ Aborted."
-    exit 0
+SETUP_ARGS=(--profile "${PROFILE}" --admin-role "${ADMIN_ROLE}" --init-warehouse "${INIT_WAREHOUSE}" --target-warehouse "${TARGET_WAREHOUSE}")
+if [[ -n "${ACCOUNT}" ]]; then
+    SETUP_ARGS+=(--account "${ACCOUNT}")
+fi
+if [[ -n "${ADMIN_USER}" ]]; then
+    SETUP_ARGS+=(--admin-user "${ADMIN_USER}")
+fi
+if [[ "${REPLACE_EXISTING}" -eq 1 ]]; then
+    SETUP_ARGS+=(--replace-existing)
+fi
+
+cat <<STATUS
+
+🖥️  Activating this Mac as primary control plane
+   Profile:          ${PROFILE}
+   Account:          ${ACCOUNT:-<from existing profile or prompt>}
+   Admin user:       ${ADMIN_USER:-<from existing profile or prompt>}
+   Toolkit:          ${TOOLKIT_DIR}
+   Project:          ${PROJECT_DIR}
+   IaC:              make ${IAC_TARGET} CONN=${PROFILE}
+   Init warehouse:   ${INIT_WAREHOUSE}
+   Target warehouse: ${TARGET_WAREHOUSE}
+
+⚠️  This registers this Mac's admin, loader, and transformer public keys in Snowflake.
+   Do not run it against the wrong account. Existing local profiles are not rewritten
+   unless --replace-existing is supplied.
+STATUS
+
+if [[ "${ASSUME_YES}" -ne 1 ]]; then
+    read -rp "🔑 Proceed? [y/N] " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        echo "❌ Aborted."
+        exit 0
+    fi
 fi
 
 echo ""
-
-# --- Step 1: Admin key registration (password auth bootstrap) -----------------
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔐 Step 1/5: Preparing local config + registering admin key"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-bash "${SETUP_SH}" --profile "${PROFILE}" --phase prereq
-bash "${SETUP_SH}" --profile "${PROFILE}" --phase admin
-echo ""
-echo "✅ Admin key registered"
-echo ""
+run_setup_clean --phase prereq
+run_setup_clean --phase admin
 
-# --- Step 2: Apply IaC (creates service users + all DDL) ----------------------
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🏗️  Step 2/5: Applying infrastructure (make ${IAC_TARGET})"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🏗️  Step 2/5: Applying infrastructure"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 make -C "${PROJECT_DIR}" "${IAC_TARGET}" CONN="${PROFILE}"
-echo ""
-echo "✅ Infrastructure applied"
-echo ""
 
-# --- Step 3: Promote admin warehouse -----------------------------------------
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "⬆️  Step 3/5: Promoting admin connection to ARTWORK_WH"
+echo "⬆️  Step 3/5: Promoting admin connection to ${TARGET_WAREHOUSE}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-bash "${SETUP_SH}" --profile "${PROFILE}" --phase promote
-echo ""
-echo "✅ Admin connection promoted"
-echo ""
+run_setup_clean --phase promote
 
-# --- Step 4: Loader key registration -----------------------------------------
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📦 Step 4/5: Registering loader service user key"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-bash "${SETUP_SH}" --profile "${PROFILE}" --phase loader
-echo ""
-echo "✅ Loader key registered"
-echo ""
+run_setup_clean --phase loader
 
-# --- Step 5: Transformer key registration -------------------------------------
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🔄 Step 5/5: Registering transformer service user key"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-bash "${SETUP_SH}" --profile "${PROFILE}" --phase transformer
-echo ""
-echo "✅ Transformer key registered"
-echo ""
+run_setup_clean --phase transformer
 
-# --- Verification -------------------------------------------------------------
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🧪 Verifying all connections..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
 FAILED=0
 for conn in "${PROFILE}" "${PROFILE}_loader" "${PROFILE}_transformer"; do
     if env -u SNOWFLAKE_ROLE -u SNOWFLAKE_USER -u SNOWFLAKE_ACCOUNT \
@@ -201,15 +213,15 @@ for conn in "${PROFILE}" "${PROFILE}_loader" "${PROFILE}_transformer"; do
     fi
 done
 
-echo ""
-if [[ "${FAILED}" -eq 0 ]]; then
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🎉 This Mac is now the active control plane."
-    echo "   All connections verified. You can run project workflows."
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-else
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "⚠️  Some connections failed. Check the output above for details."
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [[ "${FAILED}" -ne 0 ]]; then
+    echo "⚠️  Some connections failed. Check the output above."
     exit 1
 fi
+
+cat <<DONE
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 This Mac is now the active control plane for ${PROFILE}.
+   Next: write/update artwork-db .env using the template in the review output.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DONE
