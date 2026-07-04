@@ -365,18 +365,27 @@ set_default_connection() {
 # resolve_admin_account
 #
 # Resolution order:
-#   1. $SNOWFLAKE_ACCOUNT
+#   1. $SNOWFLAKE_ADMIN_ACCOUNT (explicit bootstrap/admin override)
 #   2. [<admin>].account from ~/.snowflake/connections.toml
-#   3. error (no interactive prompt -- account is not a secret but must be
-#      configured before running these scripts)
+#   3. $SNOWFLAKE_ACCOUNT ONLY when SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV=1
+#   4. error
+#
+# Generic SNOWFLAKE_ACCOUNT is intentionally ignored by default for admin
+# bootstrap. Project .env files commonly export it for loader/dbt runtime use,
+# and allowing it to override a profile is how a fresh KW94245 profile ended up
+# pointed at an older account. Use setup.sh --account or SNOWFLAKE_ADMIN_ACCOUNT
+# for admin/bootstrap intent.
 resolve_admin_account() {
-    local value="${SNOWFLAKE_ACCOUNT:-}"
+    local value="${SNOWFLAKE_ADMIN_ACCOUNT:-}"
     if [[ -z "${value}" ]]; then
         value="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'account' "${SNOW_LIB_CONNECTIONS_TOML}")"
     fi
+    if [[ -z "${value}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+        value="${SNOWFLAKE_ACCOUNT:-}"
+    fi
     if [[ -z "${value}" ]]; then
-        echo "error: cannot resolve SNOWFLAKE_ACCOUNT" >&2
-        echo "       set SNOWFLAKE_ACCOUNT in the environment OR add" >&2
+        echo "error: cannot resolve admin account" >&2
+        echo "       pass --account OR set SNOWFLAKE_ADMIN_ACCOUNT OR add" >&2
         echo "       account = \"...\" under [${SNOW_LIB_ADMIN_CONN}] in" >&2
         echo "       ${SNOW_LIB_CONNECTIONS_TOML}" >&2
         return 78
@@ -408,13 +417,21 @@ resolve_admin_user() {
 # resolve_admin_warehouse
 #
 # Resolution order:
-#   1. $SNOWFLAKE_WAREHOUSE
+#   1. $SNOWFLAKE_ADMIN_WAREHOUSE (explicit bootstrap/admin override)
 #   2. [<admin>].warehouse from ~/.snowflake/connections.toml
-#   3. fall back to $SNOW_LIB_DEFAULT_WAREHOUSE (ARTWORK_WH)
+#   3. $SNOWFLAKE_WAREHOUSE ONLY when SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV=1
+#   4. fall back to $SNOW_LIB_DEFAULT_WAREHOUSE
+#
+# Generic SNOWFLAKE_WAREHOUSE is ignored by default for the same reason as
+# SNOWFLAKE_ACCOUNT: runtime .env files often point to ARTWORK_WH, which may not
+# exist until after infrastructure has been applied.
 resolve_admin_warehouse() {
-    local value="${SNOWFLAKE_WAREHOUSE:-}"
+    local value="${SNOWFLAKE_ADMIN_WAREHOUSE:-}"
     if [[ -z "${value}" ]]; then
         value="$(parse_toml_value "${SNOW_LIB_ADMIN_CONN}" 'warehouse' "${SNOW_LIB_CONNECTIONS_TOML}")"
+    fi
+    if [[ -z "${value}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+        value="${SNOWFLAKE_WAREHOUSE:-}"
     fi
     if [[ -z "${value}" ]]; then
         value="${SNOW_LIB_DEFAULT_WAREHOUSE}"

@@ -31,12 +31,17 @@
 #     currently unset; an existing value (any profile) is never overridden.
 #
 # Value resolution (each value is prompted interactively, OR overridable via
-# its env var for non-interactive/CI use):
-#   account    SNOWFLAKE_ACCOUNT      -> prompt (no default)
-#   user       SNOWFLAKE_ADMIN_USER   -> prompt (no default)
-#   role       SNOWFLAKE_ROLE         -> prompt [default ACCOUNTADMIN]
-#   warehouse  SNOWFLAKE_WAREHOUSE    -> prompt [default INIT_DEFAULT_WAREHOUSE]
-#   key file   ADMIN_PRIVATE_KEY_FILE -> ~/.snowflake/keys/<admin>_rsa_key.p8
+# explicit admin env vars / setup.sh flags for non-interactive use):
+#   account    SNOWFLAKE_ADMIN_ACCOUNT -> prompt (no default)
+#   user       SNOWFLAKE_ADMIN_USER    -> prompt (no default)
+#   role       SNOWFLAKE_ADMIN_ROLE    -> prompt [default ACCOUNTADMIN]
+#   warehouse  SNOWFLAKE_ADMIN_WAREHOUSE -> prompt [default INIT_DEFAULT_WAREHOUSE]
+#   key file   ADMIN_PRIVATE_KEY_FILE  -> ~/.snowflake/keys/<admin>_rsa_key.p8
+#
+# Generic runtime vars such as SNOWFLAKE_ACCOUNT / SNOWFLAKE_ROLE are
+# intentionally ignored here unless SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV=1,
+# because project .env files commonly contain loader/dbt values that are wrong
+# for first-time admin bootstrap.
 #
 # The login PASSWORD is NOT collected here. This project stores key-pair auth
 # only; the password is prompted ONCE (hidden, `read -rs`) in `--phase admin`
@@ -44,9 +49,9 @@
 #
 # Note the warehouse default here is COMPUTE_WH, NOT _lib.sh's ARTWORK_WH:
 # at bootstrap time ARTWORK_WH does not exist yet (it is created later by
-# `make iac`), and the admin connection needs an account-default warehouse to
+# `make infra`), and the admin connection needs an account-default warehouse to
 # pass `snow connection test`. `--phase promote` flips it to ARTWORK_WH after
-# `make iac`.
+# `make infra`.
 #
 # Idempotent: re-running once the block exists is a reported no-op.
 # ============================================================
@@ -90,12 +95,29 @@ fi
 
 # --- Non-destructive guard: bail out if this admin profile already exists ---
 EXISTING_ACCOUNT="$(parse_toml_value "${ADMIN_SECTION}" 'account' "${CONNECTIONS_TOML}")"
-if [[ -n "${EXISTING_ACCOUNT}" ]]; then
+REQUESTED_ACCOUNT="${SNOWFLAKE_ADMIN_ACCOUNT:-}"
+if [[ -z "${REQUESTED_ACCOUNT}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+    REQUESTED_ACCOUNT="${SNOWFLAKE_ACCOUNT:-}"
+fi
+if [[ -n "${EXISTING_ACCOUNT}" && "${SNOWFLAKE_PROFILE_REPLACE:-0}" != "1" ]]; then
+    if [[ -n "${REQUESTED_ACCOUNT}" && "${REQUESTED_ACCOUNT}" != "${EXISTING_ACCOUNT}" ]]; then
+        cat >&2 <<EOF
+error: [${ADMIN_SECTION}] already points at account "${EXISTING_ACCOUNT}",
+       but this run requested "${REQUESTED_ACCOUNT}". Refusing to silently reuse
+       the wrong Snowflake account.
+
+       To intentionally rewrite this local profile, re-run with:
+         setup.sh --profile ${ADMIN_SECTION} --account ${REQUESTED_ACCOUNT} --replace-existing --phase prereq
+
+       A timestamped backup of ${CONNECTIONS_TOML} is created for every rewrite.
+EOF
+        exit 78
+    fi
     cat <<EOF
 ==> [${ADMIN_SECTION}] already configured in ${CONNECTIONS_TOML} (account = "${EXISTING_ACCOUNT}").
-    Leaving it untouched. To change account/user/warehouse, edit
-    ${CONNECTIONS_TOML} by hand or use the dedicated phases (e.g. --phase promote
-    for the warehouse). This script only SEEDS a missing admin profile.
+    Leaving it untouched. To change account/user/warehouse, pass --replace-existing
+    with explicit --account/--admin-user, edit ${CONNECTIONS_TOML} by hand, or use
+    dedicated phases such as --phase promote for post-IaC warehouse promotion.
 EOF
     # Still ensure default_connection_name is set if it is currently absent.
     # (default_connection_name lives in config.toml, not connections.toml.)
@@ -104,6 +126,9 @@ EOF
         upsert_toml_toplevel_key 'default_connection_name' "${ADMIN_CONN}" "${CONFIG_TOML}"
     fi
     exit 0
+fi
+if [[ -n "${EXISTING_ACCOUNT}" && "${SNOWFLAKE_PROFILE_REPLACE:-0}" == "1" ]]; then
+    echo "==> --replace-existing set; rewriting [${ADMIN_SECTION}] in ${CONNECTIONS_TOML}"
 fi
 
 # --- Resolve the values for the new block --------------------------------
@@ -118,7 +143,10 @@ echo "    key pair: ${PRIVATE_KEY}"
 echo "    (Enter = accept [default]; password is prompted later, hidden, in --phase admin)"
 echo
 
-ACCOUNT="${SNOWFLAKE_ACCOUNT:-}"
+ACCOUNT="${SNOWFLAKE_ADMIN_ACCOUNT:-}"
+if [[ -z "${ACCOUNT}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+    ACCOUNT="${SNOWFLAKE_ACCOUNT:-}"
+fi
 if [[ -z "${ACCOUNT}" ]]; then
     read -r -p "Snowflake account identifier (e.g. ORGNAME-ACCOUNTNAME): " ACCOUNT
 fi
@@ -130,13 +158,19 @@ if [[ -z "${ADMIN_USER}" ]]; then
 fi
 [[ -n "${ADMIN_USER}" ]] || { echo "error: login name is required" >&2; exit 78; }
 
-ROLE="${SNOWFLAKE_ROLE:-}"
+ROLE="${SNOWFLAKE_ADMIN_ROLE:-}"
+if [[ -z "${ROLE}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+    ROLE="${SNOWFLAKE_ROLE:-}"
+fi
 if [[ -z "${ROLE}" ]]; then
     read -r -p "Role [ACCOUNTADMIN]: " ROLE
     ROLE="${ROLE:-ACCOUNTADMIN}"
 fi
 
-WAREHOUSE="${SNOWFLAKE_WAREHOUSE:-}"
+WAREHOUSE="${SNOWFLAKE_ADMIN_WAREHOUSE:-}"
+if [[ -z "${WAREHOUSE}" && "${SNOWFLAKE_TOOLKIT_ALLOW_GENERIC_ADMIN_ENV:-0}" == "1" ]]; then
+    WAREHOUSE="${SNOWFLAKE_WAREHOUSE:-}"
+fi
 if [[ -z "${WAREHOUSE}" ]]; then
     read -r -p "Warehouse [${INIT_DEFAULT_WAREHOUSE}]: " WAREHOUSE
     WAREHOUSE="${WAREHOUSE:-${INIT_DEFAULT_WAREHOUSE}}"
@@ -191,8 +225,8 @@ cat <<EOF
     (default_connection_name lives in ${CONFIG_TOML})
 
 Next: register the public key and verify JWT auth:
-    ./scripts/snowflake_cli/setup.sh${PROFILE_FLAG} --phase admin
+    ${SCRIPT_DIR}/setup.sh${PROFILE_FLAG} --phase admin
 
-Or run the all-in-one activation (registers key + applies IaC + loader + transformer):
-    ./scripts/activate_mac.sh${PROFILE_FLAG}
+Or run the all-in-one activation (registers key + applies infra + loader + transformer):
+    ${SCRIPT_DIR%/snowflake_cli}/activate_mac.sh${PROFILE_FLAG} --project-dir ~/dev/artwork-db
 EOF
